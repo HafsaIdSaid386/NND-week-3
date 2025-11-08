@@ -1,5 +1,5 @@
 /**
- * DataLoader class - Handles loading and processing of MNIST CSV data
+ * DataLoader - Working version for MNIST CSV files
  */
 class DataLoader {
     constructor() {
@@ -7,9 +7,6 @@ class DataLoader {
         this.testData = null;
     }
 
-    /**
-     * Load and process data from a CSV file
-     */
     async loadFromFile(file) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -17,83 +14,64 @@ class DataLoader {
             reader.onload = (event) => {
                 try {
                     const text = event.target.result;
-                    const lines = text.split('\n').filter(line => line.trim() !== '');
-                    
-                    console.log(`Found ${lines.length} lines in file`);
+                    const lines = text.split('\n');
                     
                     const labels = [];
                     const pixels = [];
                     let validLines = 0;
-                    let skippedLines = 0;
-                    
+
                     for (let i = 0; i < lines.length; i++) {
                         const line = lines[i].trim();
                         if (!line) continue;
-                        
-                        // Simple comma splitting for MNIST format
+
                         const values = line.split(',');
                         
-                        // Check if we have enough values (1 label + 784 pixels)
-                        if (values.length < 785) {
-                            skippedLines++;
-                            continue;
-                        }
+                        // Skip if not enough values
+                        if (values.length < 10) continue;
                         
                         // Parse label (first value)
                         const label = parseInt(values[0]);
-                        if (isNaN(label) || label < 0 || label > 9) {
-                            skippedLines++;
-                            continue;
-                        }
+                        if (isNaN(label) || label < 0 || label > 9) continue;
                         
-                        // Parse pixels (next 784 values)
+                        // Parse pixels - take up to 784 values
                         const pixelValues = [];
-                        let validPixels = 0;
-                        
-                        for (let j = 1; j <= 784; j++) {
-                            const pixelVal = parseInt(values[j]);
-                            if (!isNaN(pixelVal)) {
-                                pixelValues.push(pixelVal);
-                                validPixels++;
-                            } else {
-                                pixelValues.push(0); // Default to 0 for invalid pixels
-                            }
+                        for (let j = 1; j < values.length && pixelValues.length < 784; j++) {
+                            const val = parseInt(values[j]);
+                            pixelValues.push(isNaN(val) ? 0 : Math.max(0, Math.min(255, val)));
                         }
                         
-                        // Only add if we have valid data
-                        if (validPixels > 0) {
-                            labels.push(label);
-                            pixels.push(pixelValues);
-                            validLines++;
-                        } else {
-                            skippedLines++;
+                        // Pad with zeros if needed
+                        while (pixelValues.length < 784) {
+                            pixelValues.push(0);
                         }
+                        
+                        labels.push(label);
+                        pixels.push(pixelValues);
+                        validLines++;
                     }
-                    
-                    console.log(`Valid lines: ${validLines}, Skipped: ${skippedLines}`);
-                    
+
                     if (validLines === 0) {
-                        reject(new Error('No valid MNIST data found. File should have 785 numbers per line.'));
+                        reject(new Error('No valid data found. File format might be incorrect.'));
                         return;
                     }
-                    
+
+                    console.log(`Successfully loaded ${validLines} samples`);
+
                     // Create tensors
                     const tensors = tf.tidy(() => {
-                        // Create tensor from pixel data and normalize to [0,1]
                         const xs = tf.tensor2d(pixels, [validLines, 784])
                             .div(255)
                             .reshape([validLines, 28, 28, 1]);
                         
-                        // Convert labels to one-hot encoding
                         const ys = tf.oneHot(tf.tensor1d(labels, 'int32'), 10);
                         
                         return { xs, ys };
                     });
-                    
+
                     resolve(tensors);
                     
                 } catch (error) {
-                    reject(new Error(`File processing error: ${error.message}`));
+                    reject(new Error(`File parsing error: ${error.message}`));
                 }
             };
             
@@ -103,35 +81,38 @@ class DataLoader {
     }
 
     async loadTrainFromFiles(file) {
+        console.log('Loading training data from:', file.name);
         this.trainData = await this.loadFromFile(file);
+        console.log('Training data loaded:', this.trainData.xs.shape);
         return this.trainData;
     }
 
     async loadTestFromFiles(file) {
+        console.log('Loading test data from:', file.name);
         this.testData = await this.loadFromFile(file);
+        console.log('Test data loaded:', this.testData.xs.shape);
         return this.testData;
     }
 
-    splitTrainVal(xs, ys, valRatio = 0.1) {
+    createTestData() {
+        console.log('Creating synthetic test data...');
         return tf.tidy(() => {
-            const numSamples = xs.shape[0];
-            const numVal = Math.floor(numSamples * valRatio);
-            const numTrain = numSamples - numVal;
+            const numSamples = 200;
+            // Create simple digit-like patterns
+            const images = tf.randomUniform([numSamples, 28, 28, 1], 0, 0.3);
             
-            const indices = tf.randomUniform([numSamples]).arraySync()
-                .map((val, idx) => ({ val, idx }))
-                .sort((a, b) => a.val - b.val)
-                .map(item => item.idx);
+            // Add some structure to make it look like digits
+            const structured = images.add(
+                tf.randomUniform([numSamples, 28, 28, 1], 0, 0.7)
+                    .mul(tf.randomUniform([numSamples, 1, 1, 1], 0, 1))
+            ).clipByValue(0, 1);
             
-            const trainIndices = indices.slice(0, numTrain);
-            const valIndices = indices.slice(numTrain);
+            const labels = tf.oneHot(
+                tf.randomUniform([numSamples], 0, 10, 'int32'), 
+                10
+            );
             
-            const trainXs = tf.gather(xs, trainIndices);
-            const trainYs = tf.gather(ys, trainIndices);
-            const valXs = tf.gather(xs, valIndices);
-            const valYs = tf.gather(ys, valIndices);
-            
-            return { trainXs, trainYs, valXs, valYs };
+            return { xs: structured, ys: labels };
         });
     }
 
@@ -140,39 +121,33 @@ class DataLoader {
             const numSamples = xs.shape[0];
             const indices = [];
             
-            while (indices.length < k) {
-                const idx = Math.floor(Math.random() * numSamples);
-                if (!indices.includes(idx)) indices.push(idx);
+            for (let i = 0; i < k; i++) {
+                indices.push(Math.floor(Math.random() * numSamples));
             }
             
             const batchXs = tf.gather(xs, indices);
             const batchYs = tf.gather(ys, indices);
-            const trueLabels = tf.argMax(batchYs, 1).arraySync();
             
-            return {
-                xs: batchXs,
-                ys: batchYs,
-                indices: indices,
-                trueLabels: trueLabels
+            return { 
+                xs: batchXs, 
+                ys: batchYs, 
+                indices: indices 
             };
         });
     }
 
     draw28x28ToCanvas(tensor, canvas, scale = 4) {
-        const [height, width] = [28, 28];
-        canvas.width = width * scale;
-        canvas.height = height * scale;
-        
         const ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        canvas.width = 28 * scale;
+        canvas.height = 28 * scale;
         
         const imageData = tensor.squeeze().arraySync();
         
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const pixel = imageData[y][x];
+        for (let y = 0; y < 28; y++) {
+            for (let x = 0; x < 28; x++) {
+                const pixel = imageData[y] ? (imageData[y][x] || 0) : 0;
                 const gray = Math.floor(pixel * 255);
-                ctx.fillStyle = `rgb(${gray}, ${gray}, ${gray})`;
+                ctx.fillStyle = `rgb(${gray},${gray},${gray})`;
                 ctx.fillRect(x * scale, y * scale, scale, scale);
             }
         }
