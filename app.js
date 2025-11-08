@@ -1,4 +1,4 @@
-// app.js — FINAL (fixes "labels must be a 1D tensor" and keeps evaluation robust)
+// app.js - FIXED VERSION (fixes "labels must be a 1D tensor" error)
 /**
  * MNIST browser-only trainer with:
  * - File-based CSV loading (handled by DataLoader)
@@ -6,11 +6,6 @@
  * - Evaluation: overall accuracy + confusion matrix + per-class accuracy bar chart
  * - Random 5 preview with colored predicted labels
  * - File-based save/load only (downloads:// and browserFiles)
- *
- * Notes on fixes:
- * - Evaluation now builds 1D tensors for labels/preds explicitly (argMax(1)),
- *   converts to typed arrays, then feeds tfvis.metrics.confusionMatrix.
- * - No tfvis.show.perClassAccuracy misuse; we render a bar chart from the CM.
  */
 
 class MNISTApp {
@@ -23,7 +18,7 @@ class MNISTApp {
 
     this.$ = (id) => document.getElementById(id);
     this._bindUI();
-    this.log('Ready. Upload mnist_train.csv & mnist_test.csv, then click “Load Data”.');
+    this.log('Ready. Upload mnist_train.csv & mnist_test.csv, then click "Load Data".');
   }
 
   _bindUI() {
@@ -64,11 +59,11 @@ class MNISTApp {
       const te = this.$('testFile').files[0];
       if (!tr || !te) { alert('Select BOTH mnist_train.csv and mnist_test.csv.'); return; }
 
-      this.log('Loading training CSV…');
+      this.log('Loading training CSV...');
       this.train = await this.data.loadTrainFromFiles(tr);
       await tf.nextFrame();
 
-      this.log('Loading test CSV…');
+      this.log('Loading test CSV...');
       this.test  = await this.data.loadTestFromFiles(te);
       await tf.nextFrame();
 
@@ -121,7 +116,7 @@ class MNISTApp {
 
       const epochs = 8;
       const batchSize = 128;
-      this.log(`Training… epochs=${epochs}, batchSize=${batchSize}`);
+      this.log(`Training... epochs=${epochs}, batchSize=${batchSize}`);
       const t0 = performance.now();
 
       await this.model.fit(trainXs, trainYs, {
@@ -156,7 +151,7 @@ class MNISTApp {
     try {
       if (!this.model || !this.test) { alert('Need a trained or loaded model + test data.'); return; }
 
-      this.log('Evaluating on test set…');
+      this.log('Evaluating on test set...');
 
       // Overall metrics via model.evaluate
       const [lossT, accT] = this.model.evaluate(this.test.xs, this.test.ys);
@@ -164,36 +159,64 @@ class MNISTApp {
       lossT.dispose(); accT.dispose();
       this._setMetrics(`Test Accuracy: <b>${(acc*100).toFixed(2)}%</b> &nbsp; | &nbsp; Test Loss: <b>${loss.toFixed(4)}</b>`);
 
-      // --- IMPORTANT: build 1D tensors for labels and predictions ---
-      const yTrue1D = tf.tidy(() => this.test.ys.argMax(1));          // shape [N]
-      const yPred1D = tf.tidy(() => this.model.predict(this.test.xs).argMax(1)); // shape [N]
+      // FIXED: Create proper 1D tensors for confusion matrix
+      const [yTrue1D, yPred1D] = tf.tidy(() => {
+        // Convert one-hot encoded labels back to class indices
+        const trueLabels = this.test.ys.argMax(1); // Shape: [N]
+        const predictions = this.model.predict(this.test.xs);
+        const predLabels = predictions.argMax(1); // Shape: [N]
+        predictions.dispose();
+        return [trueLabels, predLabels];
+      });
 
-      // Convert to plain arrays for tfjs-vis metrics
-      const [yTrueArr, yPredArr] = await Promise.all([ yTrue1D.data(), yPred1D.data() ]);
+      // Convert to regular arrays for tfjs-vis
+      const [yTrueArr, yPredArr] = await Promise.all([
+        yTrue1D.array(),
+        yPred1D.array()
+      ]);
 
-      // Confusion matrix (values is a 10x10 array)
-      const cm = await tfvis.metrics.confusionMatrix(yTrueArr, yPredArr, 10);
+      // Create confusion matrix
+      const confusionMatrix = await tfvis.metrics.confusionMatrix(yTrueArr, yPredArr);
+      
       const evalSurf = { name: 'Evaluation', tab: 'Evaluation' };
+      
+      // Render confusion matrix
       await tfvis.render.confusionMatrix(
-        evalSurf,
-        { values: cm, tickLabels: Array.from({length:10}, (_,i)=>String(i)) },
-        { shadeDiagonal: true }
+        evalSurf, 
+        { 
+          values: confusionMatrix, 
+          tickLabels: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] 
+        },
+        { 
+          width: 400, 
+          height: 400 
+        }
       );
 
-      // Per-class accuracy derived from CM
-      const perClass = cm.map((row, i) => {
-        const total = row.reduce((a,b)=>a+b,0);
-        const correct = row[i] ?? 0;
-        return { x: String(i), y: total ? correct/total : 0 };
-      });
+      // Calculate and render per-class accuracy
+      const perClassAccuracy = [];
+      for (let i = 0; i < 10; i++) {
+        const total = confusionMatrix[i].reduce((sum, val) => sum + val, 0);
+        const correct = confusionMatrix[i][i];
+        const accuracy = total > 0 ? correct / total : 0;
+        perClassAccuracy.push({ x: i.toString(), y: accuracy });
+      }
+
       await tfvis.render.barchart(
         { name: 'Per-class Accuracy', tab: 'Evaluation' },
-        perClass,
-        { yLabel: 'Accuracy', xLabel: 'Class', height: 300, yAxisDomain: [0,1] }
+        perClassAccuracy,
+        { 
+          xLabel: 'Digit', 
+          yLabel: 'Accuracy',
+          yAxisDomain: [0, 1],
+          height: 300
+        }
       );
 
       // Cleanup
-      yTrue1D.dispose(); yPred1D.dispose();
+      yTrue1D.dispose();
+      yPred1D.dispose();
+      
       await tf.nextFrame();
       this.log('Evaluation complete. See Visor for charts.');
     } catch (err) {
@@ -263,7 +286,7 @@ class MNISTApp {
       const bin  = this.$('modelWeights').files[0];
       if (!json || !bin) { alert('Pick BOTH model.json and weights.bin.'); return; }
 
-      this.log('Loading model from files…');
+      this.log('Loading model from files...');
       const loaded = await tf.loadLayersModel(tf.io.browserFiles([json, bin]));
 
       if (this.model) this.model.dispose();
