@@ -3,6 +3,10 @@ tf.setBackend('cpu').then(() => {
     console.log('Using CPU backend');
 });
 
+/**
+ * Main application class for MNIST Denoising Autoencoder
+ * Handles UI, model training, and denoising operations
+ */
 class MNISTApp {
     constructor() {
         this.dataLoader = new DataLoader();
@@ -12,6 +16,9 @@ class MNISTApp {
         this.bindEvents();
     }
 
+    /**
+     * Initialize UI elements reference
+     */
     initializeUI() {
         this.elements = {
             trainFile: document.getElementById('trainFile'),
@@ -37,6 +44,9 @@ class MNISTApp {
         this.updateUIState();
     }
 
+    /**
+     * Bind event listeners to UI elements
+     */
     bindEvents() {
         this.elements.loadData.addEventListener('click', () => this.onLoadData());
         this.elements.train.addEventListener('click', () => this.onTrain());
@@ -51,12 +61,18 @@ class MNISTApp {
         this.elements.modelWeights.addEventListener('change', () => this.checkModelFiles());
     }
 
+    /**
+     * Check if both model files are selected for loading
+     */
     checkModelFiles() {
         const hasJson = this.elements.modelJson.files.length > 0;
         const hasWeights = this.elements.modelWeights.files.length > 0;
         this.elements.loadModel.disabled = !(hasJson && hasWeights);
     }
 
+    /**
+     * Update UI state based on current application state
+     */
     updateUIState() {
         const hasData = this.dataLoader.trainData && this.dataLoader.testData;
         const hasModel = this.model !== null;
@@ -67,6 +83,10 @@ class MNISTApp {
         this.elements.saveModel.disabled = !hasModel;
     }
 
+    /**
+     * Log messages to training logs and console
+     * @param {string} message - Message to log
+     */
     log(message) {
         const timestamp = new Date().toLocaleTimeString();
         this.elements.trainingLogs.innerHTML += `[${timestamp}] ${message}<br>`;
@@ -74,6 +94,9 @@ class MNISTApp {
         console.log(message);
     }
 
+    /**
+     * Load and process MNIST data from CSV files
+     */
     async onLoadData() {
         try {
             const trainFile = this.elements.trainFile.files[0];
@@ -109,72 +132,79 @@ class MNISTApp {
     }
 
     /**
-     * Add random noise to images (Step 1 of homework)
+     * Add random Gaussian noise to images (Step 1 of homework)
+     * @param {tf.Tensor} images - Clean images tensor
+     * @param {number} noiseFactor - Noise intensity (0-1)
+     * @returns {tf.Tensor} Noisy images
      */
     addNoise(images, noiseFactor = 0.5) {
         return tf.tidy(() => {
-            // Add Gaussian noise
+            // Add Gaussian noise with mean 0 and specified standard deviation
             const noise = tf.randomNormal(images.shape, 0, noiseFactor);
             const noisyImages = images.add(noise);
-            // Clip values to [0, 1] range
+            // Clip values to maintain valid pixel range [0, 1]
             return noisyImages.clipByValue(0, 1);
         });
     }
 
     /**
-     * Create SIMPLER CNN Autoencoder for denoising (Step 2 of homework)
+     * Create CNN Autoencoder for denoising (Step 2 of homework)
+     * Uses same padding throughout to maintain 28x28 dimensions
      */
     createDenoisingAutoencoder() {
         const model = tf.sequential();
         
-        // Encoder
+        // Encoder - maintain spatial dimensions with 'same' padding
         model.add(tf.layers.conv2d({
             inputShape: [28, 28, 1],
-            filters: 16,  // Reduced filters
+            filters: 16,
             kernelSize: 3,
             activation: 'relu',
-            padding: 'same'
+            padding: 'same'  // Maintain 28x28 dimensions
         }));
         
-        model.add(tf.layers.conv2d({
-            filters: 8,   // Reduced filters
-            kernelSize: 3,
-            activation: 'relu',
-            padding: 'same'
-        }));
-        
-        // Decoder - maintain same spatial dimensions
         model.add(tf.layers.conv2d({
             filters: 8,
             kernelSize: 3,
             activation: 'relu',
-            padding: 'same'
+            padding: 'same'  // Maintain 28x28 dimensions
+        }));
+        
+        // Decoder - maintain spatial dimensions with 'same' padding
+        model.add(tf.layers.conv2d({
+            filters: 8,
+            kernelSize: 3,
+            activation: 'relu',
+            padding: 'same'  // Maintain 28x28 dimensions
         }));
         
         model.add(tf.layers.conv2d({
             filters: 16,
             kernelSize: 3,
             activation: 'relu',
-            padding: 'same'
+            padding: 'same'  // Maintain 28x28 dimensions
         }));
         
-        // Output layer - reconstruct original image (same shape as input)
+        // Output layer - reconstruct original image with same shape
         model.add(tf.layers.conv2d({
             filters: 1,
             kernelSize: 3,
-            activation: 'sigmoid',  // Use sigmoid for pixel values [0,1]
-            padding: 'same'
+            activation: 'sigmoid',  // Sigmoid for pixel values in [0,1] range
+            padding: 'same'  // Maintain 28x28 dimensions
         }));
         
         model.compile({
             optimizer: 'adam',
-            loss: 'meanSquaredError',
+            loss: 'meanSquaredError',  // MSE loss for image reconstruction
             metrics: ['mse']
         });
         
         return model;
     }
 
+    /**
+     * Train the denoising autoencoder model
+     */
     async onTrain() {
         if (this.isTraining) return;
         
@@ -184,33 +214,38 @@ class MNISTApp {
             this.log('Starting DENOISING AUTOENCODER training...');
             this.log('Step 1: Adding noise to training data');
             
-            // Create denoising autoencoder
+            // Create denoising autoencoder model
             this.model = this.createDenoisingAutoencoder();
             this.updateModelInfo();
             
-            // Use smaller subset for faster training and debugging
+            // Use smaller subset for faster training
             const numSamples = Math.min(1000, this.dataLoader.trainData.xs.shape[0]);
             
             this.log(`Using ${numSamples} samples for training`);
             
-            // Create noisy inputs and clean targets
+            // Create training data: noisy inputs, clean targets
             const trainingData = tf.tidy(() => {
                 const indices = Array.from({length: numSamples}, (_, i) => i);
                 const cleanImages = tf.gather(this.dataLoader.trainData.xs, indices);
                 const noisyImages = this.addNoise(cleanImages, 0.5);
+                
                 return { noisyImages, cleanImages };
             });
+            
+            // Log shapes for debugging
+            this.log(`Input shape: ${JSON.stringify(trainingData.noisyImages.shape)}`);
+            this.log(`Target shape: ${JSON.stringify(trainingData.cleanImages.shape)}`);
             
             this.log('Step 2: Training autoencoder (noisy → clean)');
             
             let currentEpoch = 0;
             
-            // Train autoencoder: input=noisy, target=clean
+            // Train the autoencoder to reconstruct clean images from noisy ones
             const history = await this.model.fit(
                 trainingData.noisyImages,  // Input: noisy images
                 trainingData.cleanImages,  // Target: clean images
                 {
-                    epochs: 3,  // Reduced for testing
+                    epochs: 5,  // Reasonable number of epochs
                     batchSize: 32,
                     validationSplit: 0.1,
                     shuffle: true,
@@ -226,7 +261,7 @@ class MNISTApp {
                 }
             );
             
-            // Clean up
+            // Clean up training tensors
             trainingData.noisyImages.dispose();
             trainingData.cleanImages.dispose();
             
@@ -243,26 +278,29 @@ class MNISTApp {
         }
     }
 
+    /**
+     * Evaluate denoising performance on test data
+     */
     async onEvaluate() {
         if (!this.model || !this.dataLoader.testData) return;
         
         try {
             this.log('Evaluating denoising performance...');
             
-            // Use smaller test subset
+            // Use smaller test subset for evaluation
             const testSize = Math.min(100, this.dataLoader.testData.xs.shape[0]);
             const testSubset = tf.tidy(() => {
                 const indices = Array.from({length: testSize}, (_, i) => i);
                 return tf.gather(this.dataLoader.testData.xs, indices);
             });
             
-            // Add noise to test images
+            // Create noisy test images
             const noisyTest = this.addNoise(testSubset, 0.5);
             
-            // Denoise them
+            // Denoise using trained model
             const denoised = this.model.predict(noisyTest);
             
-            // Calculate reconstruction error
+            // Calculate reconstruction error (Mean Squared Error)
             const mse = tf.losses.meanSquaredError(testSubset, denoised);
             const mseValue = (await mse.data())[0];
             
@@ -274,7 +312,7 @@ class MNISTApp {
             
             this.log(`Denoising evaluation completed! MSE: ${mseValue.toFixed(4)}`);
             
-            // Clean up
+            // Clean up tensors
             testSubset.dispose();
             noisyTest.dispose();
             denoised.dispose();
@@ -287,7 +325,8 @@ class MNISTApp {
     }
 
     /**
-     * Modified Test 5 Random to show denoising results (Step 3 of homework)
+     * Test denoising on 5 random images (Step 3 of homework)
+     * Shows original, noisy, and denoised images for comparison
      */
     async onTestFive() {
         if (!this.model || !this.dataLoader.testData) return;
@@ -295,23 +334,24 @@ class MNISTApp {
         try {
             this.log('Testing denoising on 5 random images...');
             
-            // Get clean test images
+            // Get random batch of clean test images
             const batch = this.dataLoader.getRandomTestBatch(
                 this.dataLoader.testData.xs,
                 this.dataLoader.testData.ys,
                 5
             );
             
-            // Add noise to these images
+            // Add noise to create corrupted inputs
             const noisyImages = this.addNoise(batch.xs, 0.6);
             
-            // Denoise them
+            // Denoise using trained autoencoder
             const denoisedImages = this.model.predict(noisyImages);
             
+            // Clear previous results
             this.elements.imagePreview.innerHTML = '';
             this.elements.predictionResults.innerHTML = '<h3>Denoising Results (Original → Noisy → Denoised)</h3>';
             
-            // Create comparison for each image
+            // Create visual comparison for each image
             for (let i = 0; i < 5; i++) {
                 const comparisonContainer = document.createElement('div');
                 comparisonContainer.style.display = 'flex';
@@ -319,19 +359,19 @@ class MNISTApp {
                 comparisonContainer.style.marginBottom = '20px';
                 comparisonContainer.style.alignItems = 'center';
                 
-                // Original image
+                // Original clean image
                 const originalContainer = this.createImageWithLabel(
                     tf.slice(batch.xs, [i, 0, 0, 0], [1, 28, 28, 1]),
                     'Original'
                 );
                 
-                // Noisy image
+                // Noisy input image
                 const noisyContainer = this.createImageWithLabel(
                     tf.slice(noisyImages, [i, 0, 0, 0], [1, 28, 28, 1]),
                     'Noisy'
                 );
                 
-                // Denoised image
+                // Denoised output image
                 const denoisedContainer = this.createImageWithLabel(
                     tf.slice(denoisedImages, [i, 0, 0, 0], [1, 28, 28, 1]),
                     'Denoised'
@@ -346,7 +386,7 @@ class MNISTApp {
             
             this.log('Displayed denoising comparison for 5 images');
             
-            // Clean up
+            // Clean up tensors
             tf.dispose([batch.xs, batch.ys, noisyImages, denoisedImages]);
             
         } catch (error) {
@@ -355,6 +395,12 @@ class MNISTApp {
         }
     }
 
+    /**
+     * Create image container with label for display
+     * @param {tf.Tensor} tensor - Image tensor
+     * @param {string} label - Display label
+     * @returns {HTMLElement} Container with image and label
+     */
     createImageWithLabel(tensor, label) {
         const container = document.createElement('div');
         container.style.display = 'flex';
@@ -374,6 +420,9 @@ class MNISTApp {
         return container;
     }
 
+    /**
+     * Save trained model to files (Step 4 of homework)
+     */
     async onSaveDownload() {
         if (!this.model) return;
         
@@ -387,6 +436,9 @@ class MNISTApp {
         }
     }
 
+    /**
+     * Load pre-trained model from files (Step 4 of homework)
+     */
     async onLoadFromFiles() {
         try {
             const jsonFile = this.elements.modelJson.files[0];
@@ -399,8 +451,10 @@ class MNISTApp {
             
             this.log('Loading denoising autoencoder model...');
             
+            // Load model architecture and weights
             this.model = await tf.loadLayersModel(tf.io.browserFiles([jsonFile, weightsFile]));
             
+            // Recompile the loaded model
             this.model.compile({
                 optimizer: 'adam',
                 loss: 'meanSquaredError',
@@ -417,6 +471,9 @@ class MNISTApp {
         }
     }
 
+    /**
+     * Update model information display
+     */
     updateModelInfo() {
         if (!this.model) return;
         
@@ -435,6 +492,9 @@ class MNISTApp {
         `;
     }
 
+    /**
+     * Reset application state and clear all data
+     */
     onReset() {
         if (this.model) {
             this.model.dispose();
@@ -442,6 +502,7 @@ class MNISTApp {
         }
         this.dataLoader.dispose();
         
+        // Clear all UI elements
         this.elements.dataStatus.innerHTML = 'No data loaded';
         this.elements.modelInfo.innerHTML = 'No model loaded';
         this.elements.trainingLogs.innerHTML = '';
@@ -449,6 +510,7 @@ class MNISTApp {
         this.elements.predictionResults.innerHTML = '';
         this.elements.metrics.innerHTML = 'No evaluation performed';
         
+        // Clear file inputs
         this.elements.trainFile.value = '';
         this.elements.testFile.value = '';
         this.elements.modelJson.value = '';
@@ -458,6 +520,9 @@ class MNISTApp {
         this.log('Application reset');
     }
 
+    /**
+     * Toggle TensorFlow.js visor for charts and metrics
+     */
     toggleVisor() {
         tfvis.visor().toggle();
     }
