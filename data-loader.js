@@ -1,4 +1,4 @@
-// data-loader.js
+// data-loader.js (FIXED VERSION)
 /**
  * Data loader utility for MNIST CSV files
  * Handles file parsing, normalization, and tensor creation
@@ -20,47 +20,80 @@ class DataLoader {
             const reader = new FileReader();
             
             reader.onload = (event) => {
-                tf.tidy(() => {
+                // Use tf.tidy to automatically clean up intermediate tensors
+                const result = tf.tidy(() => {
                     try {
                         const csvText = event.target.result;
-                        const lines = csvText.split('\n').filter(line => line.trim() !== '');
+                        console.log('File loaded, first 500 chars:', csvText.substring(0, 500));
                         
+                        // More robust CSV parsing
+                        const lines = csvText.split('\n')
+                            .map(line => line.trim())
+                            .filter(line => line.length > 0);
+                        
+                        console.log(`Found ${lines.length} lines in CSV`);
+                        
+                        if (lines.length === 0) {
+                            throw new Error('CSV file is empty');
+                        }
+
                         const labels = [];
                         const pixels = [];
-                        
+                        let validLines = 0;
+
                         // Parse each line: first value is label, next 784 are pixels
-                        for (const line of lines) {
-                            const values = line.split(',').map(Number);
-                            if (values.length !== 785) continue; // Skip invalid lines
+                        for (let i = 0; i < lines.length; i++) {
+                            const line = lines[i];
+                            // Split by comma and remove empty values
+                            const values = line.split(',')
+                                .map(val => val.trim())
+                                .filter(val => val.length > 0)
+                                .map(Number);
                             
-                            labels.push(values[0]);
-                            pixels.push(values.slice(1));
+                            // Check if we have exactly 785 values (label + 784 pixels)
+                            if (values.length === 785) {
+                                labels.push(values[0]);
+                                pixels.push(values.slice(1, 785)); // Take exactly 784 pixels
+                                validLines++;
+                            } else if (values.length > 0) {
+                                console.warn(`Line ${i + 1} has ${values.length} values, expected 785. Skipping.`);
+                            }
                         }
+
+                        console.log(`Successfully parsed ${validLines} valid lines`);
                         
-                        if (labels.length === 0) {
-                            reject(new Error('No valid data found in file'));
-                            return;
+                        if (validLines === 0) {
+                            throw new Error('No valid data rows found in CSV file');
                         }
-                        
+
                         // Convert to tensors
                         const xs = tf.tensor4d(
                             pixels,
                             [pixels.length, 28, 28, 1]
-                        ).div(255); // Normalize to [0, 1]
-                        
+                        ).div(255.0); // Normalize to [0, 1]
+
                         const ys = tf.oneHot(
                             tf.tensor1d(labels, 'int32'),
                             10
                         );
-                        
-                        resolve({ xs, ys });
+
+                        return { xs, ys };
                     } catch (error) {
                         reject(error);
+                        return null;
                     }
                 });
+                
+                if (result) {
+                    resolve(result);
+                }
             };
             
-            reader.onerror = () => reject(new Error('Failed to read file'));
+            reader.onerror = (error) => {
+                console.error('FileReader error:', error);
+                reject(new Error(`Failed to read file: ${error}`));
+            };
+            
             reader.readAsText(file);
         });
     }
@@ -71,7 +104,9 @@ class DataLoader {
      * @returns {Promise<{xs: tf.Tensor, ys: tf.Tensor}>}
      */
     async loadTrainFromFiles(file) {
+        console.log('Loading training file:', file.name);
         this.trainData = await this.loadFromFile(file);
+        console.log('Training data loaded:', this.trainData.xs.shape);
         return this.trainData;
     }
 
@@ -81,7 +116,9 @@ class DataLoader {
      * @returns {Promise<{xs: tf.Tensor, ys: tf.Tensor}>}
      */
     async loadTestFromFiles(file) {
+        console.log('Loading test file:', file.name);
         this.testData = await this.loadFromFile(file);
+        console.log('Test data loaded:', this.testData.xs.shape);
         return this.testData;
     }
 
@@ -97,6 +134,8 @@ class DataLoader {
             const numSamples = xs.shape[0];
             const numVal = Math.floor(numSamples * valRatio);
             const numTrain = numSamples - numVal;
+            
+            console.log(`Splitting data: ${numTrain} training, ${numVal} validation`);
             
             // Create indices and shuffle
             const indices = tf.util.createShuffledIndices(numSamples);
@@ -128,12 +167,14 @@ class DataLoader {
             const indices = [];
             
             // Generate k unique random indices
-            while (indices.length < k) {
+            while (indices.length < k && indices.length < numSamples) {
                 const idx = Math.floor(Math.random() * numSamples);
                 if (!indices.includes(idx)) {
                     indices.push(idx);
                 }
             }
+            
+            console.log(`Selected random indices: ${indices}`);
             
             const batchXs = tf.gather(xs, indices);
             const batchYs = tf.gather(ys, indices);
