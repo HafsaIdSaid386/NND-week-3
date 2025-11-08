@@ -1,6 +1,5 @@
 /**
  * DataLoader class - Handles loading and processing of MNIST CSV data
- * Responsible for file parsing, tensor creation, and data management
  */
 class DataLoader {
     constructor() {
@@ -10,8 +9,6 @@ class DataLoader {
 
     /**
      * Load and process data from a CSV file
-     * @param {File} file - The CSV file to load
-     * @returns {Promise} Promise that resolves to {xs, ys} tensors
      */
     async loadFromFile(file) {
         return new Promise((resolve, reject) => {
@@ -22,30 +19,70 @@ class DataLoader {
                     const text = event.target.result;
                     const lines = text.split('\n').filter(line => line.trim() !== '');
                     
+                    console.log(`Found ${lines.length} lines in file`);
+                    
                     const labels = [];
                     const pixels = [];
+                    let validLines = 0;
+                    let skippedLines = 0;
                     
-                    for (const line of lines) {
-                        const values = line.split(',').map(val => val.trim());
-                        if (values.length !== 785) continue;
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        if (!line) continue;
                         
+                        // Simple comma splitting for MNIST format
+                        const values = line.split(',');
+                        
+                        // Check if we have enough values (1 label + 784 pixels)
+                        if (values.length < 785) {
+                            skippedLines++;
+                            continue;
+                        }
+                        
+                        // Parse label (first value)
                         const label = parseInt(values[0]);
-                        const pixelValues = values.slice(1, 785).map(Number);
+                        if (isNaN(label) || label < 0 || label > 9) {
+                            skippedLines++;
+                            continue;
+                        }
                         
-                        labels.push(label);
-                        pixels.push(pixelValues);
+                        // Parse pixels (next 784 values)
+                        const pixelValues = [];
+                        let validPixels = 0;
+                        
+                        for (let j = 1; j <= 784; j++) {
+                            const pixelVal = parseInt(values[j]);
+                            if (!isNaN(pixelVal)) {
+                                pixelValues.push(pixelVal);
+                                validPixels++;
+                            } else {
+                                pixelValues.push(0); // Default to 0 for invalid pixels
+                            }
+                        }
+                        
+                        // Only add if we have valid data
+                        if (validPixels > 0) {
+                            labels.push(label);
+                            pixels.push(pixelValues);
+                            validLines++;
+                        } else {
+                            skippedLines++;
+                        }
                     }
                     
-                    if (labels.length === 0) {
-                        reject(new Error('No valid data found in file'));
+                    console.log(`Valid lines: ${validLines}, Skipped: ${skippedLines}`);
+                    
+                    if (validLines === 0) {
+                        reject(new Error('No valid MNIST data found. File should have 785 numbers per line.'));
                         return;
                     }
                     
+                    // Create tensors
                     const tensors = tf.tidy(() => {
-                        // Create tensor from pixel data, normalize to [0,1], reshape to image format
-                        const xs = tf.tensor2d(pixels)
+                        // Create tensor from pixel data and normalize to [0,1]
+                        const xs = tf.tensor2d(pixels, [validLines, 784])
                             .div(255)
-                            .reshape([labels.length, 28, 28, 1]);
+                            .reshape([validLines, 28, 28, 1]);
                         
                         // Convert labels to one-hot encoding
                         const ys = tf.oneHot(tf.tensor1d(labels, 'int32'), 10);
@@ -56,7 +93,7 @@ class DataLoader {
                     resolve(tensors);
                     
                 } catch (error) {
-                    reject(error);
+                    reject(new Error(`File processing error: ${error.message}`));
                 }
             };
             
@@ -65,38 +102,22 @@ class DataLoader {
         });
     }
 
-    /**
-     * Load training data from file
-     * @param {File} file - Training CSV file
-     */
     async loadTrainFromFiles(file) {
         this.trainData = await this.loadFromFile(file);
         return this.trainData;
     }
 
-    /**
-     * Load test data from file
-     * @param {File} file - Test CSV file
-     */
     async loadTestFromFiles(file) {
         this.testData = await this.loadFromFile(file);
         return this.testData;
     }
 
-    /**
-     * Split data into training and validation sets
-     * @param {tf.Tensor} xs - Input features
-     * @param {tf.Tensor} ys - Labels
-     * @param {number} valRatio - Validation ratio (default: 0.1)
-     * @returns {Object} Split datasets
-     */
     splitTrainVal(xs, ys, valRatio = 0.1) {
         return tf.tidy(() => {
             const numSamples = xs.shape[0];
             const numVal = Math.floor(numSamples * valRatio);
             const numTrain = numSamples - numVal;
             
-            // Create random indices for splitting
             const indices = tf.randomUniform([numSamples]).arraySync()
                 .map((val, idx) => ({ val, idx }))
                 .sort((a, b) => a.val - b.val)
@@ -114,19 +135,11 @@ class DataLoader {
         });
     }
 
-    /**
-     * Get a random batch of test samples
-     * @param {tf.Tensor} xs - Test features
-     * @param {tf.Tensor} ys - Test labels
-     * @param {number} k - Number of samples (default: 5)
-     * @returns {Object} Batch of samples with true labels
-     */
     getRandomTestBatch(xs, ys, k = 5) {
         return tf.tidy(() => {
             const numSamples = xs.shape[0];
             const indices = [];
             
-            // Select k unique random indices
             while (indices.length < k) {
                 const idx = Math.floor(Math.random() * numSamples);
                 if (!indices.includes(idx)) indices.push(idx);
@@ -145,12 +158,6 @@ class DataLoader {
         });
     }
 
-    /**
-     * Draw a 28x28 image tensor to canvas
-     * @param {tf.Tensor} tensor - Image tensor [1,28,28,1]
-     * @param {HTMLCanvasElement} canvas - Target canvas element
-     * @param {number} scale - Scaling factor for display
-     */
     draw28x28ToCanvas(tensor, canvas, scale = 4) {
         const [height, width] = [28, 28];
         canvas.width = width * scale;
@@ -161,7 +168,6 @@ class DataLoader {
         
         const imageData = tensor.squeeze().arraySync();
         
-        // Draw each pixel to canvas
         for (let y = 0; y < height; y++) {
             for (let x = 0; x < width; x++) {
                 const pixel = imageData[y][x];
@@ -172,9 +178,6 @@ class DataLoader {
         }
     }
 
-    /**
-     * Clean up tensors and free memory
-     */
     dispose() {
         if (this.trainData) {
             this.trainData.xs.dispose();
