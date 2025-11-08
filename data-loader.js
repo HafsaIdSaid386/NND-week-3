@@ -1,8 +1,9 @@
-// data-loader.js (UPDATED)
+// data-loader.js - UPDATED WITH NOISE FUNCTIONS
 // - Robust CSV parser (auto-detects delimiter, skips optional header, tolerates trailing commas)
 // - Normalizes pixels to [0,1], reshapes to [N,28,28,1], one-hot labels depth 10
 // - FIX: tf.gather now receives an int32 Tensor for indices (avoids Uint32Array error)
 // - Careful tensor disposal to prevent memory leaks
+// - ADDED: Noise functions for autoencoder training
 
 class DataLoader {
   constructor() {
@@ -124,6 +125,20 @@ class DataLoader {
   }
 
   /**
+   * Add Gaussian noise to images for autoencoder training
+   * @param {tf.Tensor} tensor - Input images [N,28,28,1]
+   * @param {number} noiseLevel - Standard deviation of Gaussian noise (default: 0.5)
+   * @returns {tf.Tensor} Noisy images
+   */
+  addNoise(tensor, noiseLevel = 0.5) {
+    return tf.tidy(() => {
+      const noise = tf.randomNormal(tensor.shape, 0, noiseLevel);
+      const noisy = tensor.add(noise);
+      return noisy.clipByValue(0, 1); // Ensure values stay in [0,1] range
+    });
+  }
+
+  /**
    * Split into train/val with random shuffle.
    * IMPORTANT FIX:
    * - tf.util.createShuffledIndices returns a Uint32Array.
@@ -167,6 +182,27 @@ class DataLoader {
     const batchXs = tf.gather(xs, idx);
     const batchYs = tf.gather(ys, idx);
     return { xs: batchXs, ys: batchYs, indices: idx };
+  }
+
+  /**
+   * Get random batch for autoencoder denoising demo
+   * Returns: original images, noisy images, and labels
+   */
+  getRandomDenoisingBatch(xs, ys, k = 5, noiseLevel = 0.5) {
+    const n = xs.shape[0];
+    const idx = new Array(k);
+    for (let i = 0; i < k; i++) idx[i] = Math.floor(Math.random() * n);
+
+    const batchXs = tf.gather(xs, idx);
+    const batchYs = tf.gather(ys, idx);
+    const noisyXs = this.addNoise(batchXs, noiseLevel);
+    
+    return { 
+      original: batchXs, 
+      noisy: noisyXs, 
+      ys: batchYs, 
+      indices: idx 
+    };
   }
 
   /**
