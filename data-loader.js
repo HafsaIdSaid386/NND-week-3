@@ -1,9 +1,18 @@
+/**
+ * DataLoader class - Handles loading and processing of MNIST CSV data
+ * Responsible for file parsing, tensor creation, and data management
+ */
 class DataLoader {
     constructor() {
         this.trainData = null;
         this.testData = null;
     }
 
+    /**
+     * Load and process data from a CSV file
+     * @param {File} file - The CSV file to load
+     * @returns {Promise} Promise that resolves to {xs, ys} tensors
+     */
     async loadFromFile(file) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -33,10 +42,12 @@ class DataLoader {
                     }
                     
                     const tensors = tf.tidy(() => {
+                        // Create tensor from pixel data, normalize to [0,1], reshape to image format
                         const xs = tf.tensor2d(pixels)
                             .div(255)
                             .reshape([labels.length, 28, 28, 1]);
                         
+                        // Convert labels to one-hot encoding
                         const ys = tf.oneHot(tf.tensor1d(labels, 'int32'), 10);
                         
                         return { xs, ys };
@@ -54,22 +65,38 @@ class DataLoader {
         });
     }
 
+    /**
+     * Load training data from file
+     * @param {File} file - Training CSV file
+     */
     async loadTrainFromFiles(file) {
         this.trainData = await this.loadFromFile(file);
         return this.trainData;
     }
 
+    /**
+     * Load test data from file
+     * @param {File} file - Test CSV file
+     */
     async loadTestFromFiles(file) {
         this.testData = await this.loadFromFile(file);
         return this.testData;
     }
 
+    /**
+     * Split data into training and validation sets
+     * @param {tf.Tensor} xs - Input features
+     * @param {tf.Tensor} ys - Labels
+     * @param {number} valRatio - Validation ratio (default: 0.1)
+     * @returns {Object} Split datasets
+     */
     splitTrainVal(xs, ys, valRatio = 0.1) {
         return tf.tidy(() => {
             const numSamples = xs.shape[0];
             const numVal = Math.floor(numSamples * valRatio);
             const numTrain = numSamples - numVal;
             
+            // Create random indices for splitting
             const indices = tf.randomUniform([numSamples]).arraySync()
                 .map((val, idx) => ({ val, idx }))
                 .sort((a, b) => a.val - b.val)
@@ -87,11 +114,19 @@ class DataLoader {
         });
     }
 
+    /**
+     * Get a random batch of test samples
+     * @param {tf.Tensor} xs - Test features
+     * @param {tf.Tensor} ys - Test labels
+     * @param {number} k - Number of samples (default: 5)
+     * @returns {Object} Batch of samples with true labels
+     */
     getRandomTestBatch(xs, ys, k = 5) {
         return tf.tidy(() => {
             const numSamples = xs.shape[0];
             const indices = [];
             
+            // Select k unique random indices
             while (indices.length < k) {
                 const idx = Math.floor(Math.random() * numSamples);
                 if (!indices.includes(idx)) indices.push(idx);
@@ -110,6 +145,12 @@ class DataLoader {
         });
     }
 
+    /**
+     * Draw a 28x28 image tensor to canvas
+     * @param {tf.Tensor} tensor - Image tensor [1,28,28,1]
+     * @param {HTMLCanvasElement} canvas - Target canvas element
+     * @param {number} scale - Scaling factor for display
+     */
     draw28x28ToCanvas(tensor, canvas, scale = 4) {
         const [height, width] = [28, 28];
         canvas.width = width * scale;
@@ -120,6 +161,7 @@ class DataLoader {
         
         const imageData = tensor.squeeze().arraySync();
         
+        // Draw each pixel to canvas
         for (let y = 0; y < height; y++) {
             for (let x = 0; x < width; x++) {
                 const pixel = imageData[y][x];
@@ -130,6 +172,9 @@ class DataLoader {
         }
     }
 
+    /**
+     * Clean up tensors and free memory
+     */
     dispose() {
         if (this.trainData) {
             this.trainData.xs.dispose();
