@@ -1,25 +1,27 @@
 // app.js
 /**
- * Main application for MNIST CNN classifier
- * Handles UI interactions, model training, and evaluation
+ * Main application for MNIST CNN training and evaluation
+ * Handles UI interactions, model management, and training workflow
  */
 
 class MNISTApp {
     constructor() {
         this.dataLoader = new DataLoader();
         this.model = null;
+        this.trainData = null;
+        this.testData = null;
         this.isTraining = false;
         this.currentEpoch = 0;
         
         this.initializeUI();
-        this.log('Application initialized. Please load MNIST data files.');
+        this.log('Application initialized. Please load MNIST CSV files.');
     }
 
     /**
      * Initialize UI event listeners
      */
     initializeUI() {
-        // File input handlers
+        // File inputs
         document.getElementById('loadData').addEventListener('click', () => this.onLoadData());
         document.getElementById('train').addEventListener('click', () => this.onTrain());
         document.getElementById('evaluate').addEventListener('click', () => this.onEvaluate());
@@ -28,23 +30,10 @@ class MNISTApp {
         document.getElementById('loadModel').addEventListener('click', () => this.onLoadFromFiles());
         document.getElementById('reset').addEventListener('click', () => this.onReset());
         document.getElementById('toggleVisor').addEventListener('click', () => this.toggleVisor());
-
-        // Enable load model button when files are selected
-        document.getElementById('modelJsonFile').addEventListener('change', () => this.checkModelFiles());
-        document.getElementById('modelWeightsFile').addEventListener('change', () => this.checkModelFiles());
     }
 
     /**
-     * Check if both model files are selected and enable load button
-     */
-    checkModelFiles() {
-        const jsonFile = document.getElementById('modelJsonFile').files[0];
-        const weightsFile = document.getElementById('modelWeightsFile').files[0];
-        document.getElementById('loadModel').disabled = !(jsonFile && weightsFile);
-    }
-
-    /**
-     * Load data from CSV files
+     * Load data from uploaded CSV files
      */
     async onLoadData() {
         try {
@@ -52,32 +41,34 @@ class MNISTApp {
             const testFile = document.getElementById('testFile').files[0];
             
             if (!trainFile || !testFile) {
-                alert('Please select both train and test CSV files');
+                alert('Please select both train and test CSV files.');
                 return;
             }
 
             this.log('Loading training data...');
-            const trainData = await this.dataLoader.loadTrainFromFiles(trainFile);
+            this.trainData = await this.dataLoader.loadTrainFromFiles(trainFile);
             
             this.log('Loading test data...');
-            const testData = await this.dataLoader.loadTestFromFiles(testFile);
-
-            // Update data status
-            document.getElementById('dataStatus').innerHTML = `
-                Train samples: ${trainData.xs.shape[0]}<br>
-                Test samples: ${testData.xs.shape[0]}
-            `;
-
-            // Enable buttons
+            this.testData = await this.dataLoader.loadTestFromFiles(testFile);
+            
+            // Update UI
             document.getElementById('train').disabled = false;
             document.getElementById('evaluate').disabled = false;
             document.getElementById('testFive').disabled = false;
-
+            
+            const trainSamples = this.trainData.xs.shape[0];
+            const testSamples = this.testData.xs.shape[0];
+            
+            document.getElementById('dataStatus').innerHTML = `
+                Train samples: ${trainSamples}<br>
+                Test samples: ${testSamples}
+            `;
+            
             this.log('Data loaded successfully!');
             
         } catch (error) {
             this.log(`Error loading data: ${error.message}`);
-            console.error('Data loading error:', error);
+            console.error(error);
         }
     }
 
@@ -85,53 +76,64 @@ class MNISTApp {
      * Create and train CNN model
      */
     async onTrain() {
-        if (this.isTraining) {
-            alert('Training already in progress');
+        if (!this.trainData) {
+            alert('Please load data first.');
             return;
         }
 
         try {
             this.isTraining = true;
-            this.log('Starting model training...');
-
+            this.currentEpoch = 0;
+            
             // Create model
             this.model = this.createModel();
-            this.updateModelInfo();
-
+            this.log('Model created successfully.');
+            
             // Split training data
             const { trainXs, trainYs, valXs, valYs } = this.dataLoader.splitTrainVal(
-                this.dataLoader.trainData.xs, 
-                this.dataLoader.trainData.ys, 
-                0.1
+                this.trainData.xs, this.trainData.ys, 0.1
             );
-
-            // Set up training callbacks
-            const fitCallbacks = tfvis.show.fitCallbacks(
-                { name: 'Training Metrics' },
-                ['loss', 'val_loss', 'acc', 'val_acc']
-            );
-
+            
+            // Compile model
+            this.model.compile({
+                optimizer: 'adam',
+                loss: 'categoricalCrossentropy',
+                metrics: ['accuracy']
+            });
+            
+            // Setup callbacks for visualization
+            const surface = { name: 'Model Training', tab: 'Training' };
+            const fitCallbacks = tfvis.show.fitCallbacks(surface, ['loss', 'val_loss', 'acc', 'val_acc'], {
+                callbacks: ['onEpochEnd', 'onBatchEnd']
+            });
+            
             // Train model
-            const history = await this.model.fit(trainXs, trainYs, {
+            this.log('Starting training...');
+            const startTime = Date.now();
+            
+            await this.model.fit(trainXs, trainYs, {
                 epochs: 10,
                 batchSize: 128,
                 validationData: [valXs, valYs],
                 shuffle: true,
                 callbacks: fitCallbacks
             });
-
-            // Clean up tensors
+            
+            const trainingTime = ((Date.now() - startTime) / 1000).toFixed(2);
+            this.log(`Training completed in ${trainingTime} seconds.`);
+            
+            // Enable save button
+            document.getElementById('saveModel').disabled = false;
+            
+            // Cleanup
             trainXs.dispose();
             trainYs.dispose();
             valXs.dispose();
             valYs.dispose();
-
-            this.log('Training completed!');
-            document.getElementById('saveModel').disabled = false;
-
+            
         } catch (error) {
             this.log(`Training error: ${error.message}`);
-            console.error('Training error:', error);
+            console.error(error);
         } finally {
             this.isTraining = false;
         }
@@ -165,19 +167,25 @@ class MNISTApp {
         model.add(tf.layers.maxPooling2d({ poolSize: 2 }));
         model.add(tf.layers.dropout({ rate: 0.25 }));
         
-        // Flatten and dense layers
+        // Flatten for dense layers
         model.add(tf.layers.flatten());
+        
+        // Dense layers
         model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
         model.add(tf.layers.dropout({ rate: 0.5 }));
         model.add(tf.layers.dense({ units: 10, activation: 'softmax' }));
-
-        // Compile model
-        model.compile({
-            optimizer: 'adam',
-            loss: 'categoricalCrossentropy',
-            metrics: ['accuracy']
-        });
-
+        
+        // Display model summary
+        model.summary();
+        
+        // Update model info
+        const totalParams = model.countParams();
+        const layers = model.layers.length;
+        document.getElementById('modelInfo').innerHTML = `
+            Layers: ${layers}<br>
+            Total parameters: ${totalParams.toLocaleString()}
+        `;
+        
         return model;
     }
 
@@ -185,244 +193,187 @@ class MNISTApp {
      * Evaluate model on test data
      */
     async onEvaluate() {
-        if (!this.model) {
-            alert('Please train or load a model first');
+        if (!this.model || !this.testData) {
+            alert('Please train or load a model and ensure test data is available.');
             return;
         }
 
         try {
             this.log('Evaluating model...');
             
-            const testData = this.dataLoader.testData;
-            const evaluation = await this.model.evaluate(testData.xs, testData.ys);
-            const accuracy = evaluation[1].dataSync()[0];
+            // Calculate test accuracy
+            const evaluation = this.model.evaluate(this.testData.xs, this.testData.ys);
+            const testLoss = evaluation[0].dataSync()[0];
+            const testAcc = evaluation[1].dataSync()[0];
             
             // Update metrics
             document.getElementById('metrics').innerHTML = `
-                Overall Accuracy: <strong>${(accuracy * 100).toFixed(2)}%</strong>
+                Test Accuracy: ${(testAcc * 100).toFixed(2)}%<br>
+                Test Loss: ${testLoss.toFixed(4)}
             `;
-
+            
+            this.log(`Test accuracy: ${(testAcc * 100).toFixed(2)}%`);
+            
             // Generate predictions for confusion matrix
-            const predictions = this.model.predict(testData.xs);
+            const predictions = this.model.predict(this.testData.xs);
             const predLabels = predictions.argMax(-1);
-            const trueLabels = testData.ys.argMax(-1);
-
+            const trueLabels = this.testData.ys.argMax(-1);
+            
             // Create confusion matrix
             const confusionMatrix = await tfvis.metrics.confusionMatrix(trueLabels, predLabels);
             
-            // Show charts in visor
-            const confusionMatrixContainer = { name: 'Confusion Matrix', tab: 'Evaluation' };
-            tfvis.render.confusionMatrix(confusionMatrixContainer, confusionMatrix, 10);
+            // Visualize results
+            const metricsSurface = { name: 'Model Evaluation', tab: 'Evaluation' };
             
-            // Calculate per-class accuracy
-            const classAccuracy = this.calculatePerClassAccuracy(confusionMatrix);
-            const accuracyContainer = { name: 'Per-Class Accuracy', tab: 'Evaluation' };
-            tfvis.render.barchart(accuracyContainer, classAccuracy);
+            tfvis.show.perClassAccuracy(metricsSurface, confusionMatrix, ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
+            tfvis.render.confusionMatrix(metricsSurface, { values: confusionMatrix }, {
+                width: 400,
+                height: 400
+            });
             
-            // Clean up
+            // Cleanup
             predictions.dispose();
             predLabels.dispose();
             trueLabels.dispose();
-            
-            this.log(`Evaluation completed. Accuracy: ${(accuracy * 100).toFixed(2)}%`);
+            evaluation[0].dispose();
+            evaluation[1].dispose();
             
         } catch (error) {
             this.log(`Evaluation error: ${error.message}`);
-            console.error('Evaluation error:', error);
+            console.error(error);
         }
-    }
-
-    /**
-     * Calculate per-class accuracy from confusion matrix
-     * @param {Array} confusionMatrix - Confusion matrix data
-     * @returns {Array} Per-class accuracy data
-     */
-    calculatePerClassAccuracy(confusionMatrix) {
-        return confusionMatrix.map((row, i) => {
-            const correct = row[i];
-            const total = row.reduce((sum, val) => sum + val, 0);
-            const accuracy = total > 0 ? correct / total : 0;
-            return {
-                index: i,
-                accuracy: accuracy,
-                label: `Class ${i}`
-            };
-        });
     }
 
     /**
      * Test 5 random samples and display predictions
      */
     async onTestFive() {
-        if (!this.model || !this.dataLoader.testData) {
-            alert('Please load data and train a model first');
+        if (!this.model || !this.testData) {
+            alert('Please train or load a model and ensure test data is available.');
             return;
         }
 
         try {
-            const testData = this.dataLoader.testData;
-            const batch = this.dataLoader.getRandomTestBatch(testData.xs, testData.ys, 5);
-            
+            const batch = this.dataLoader.getRandomTestBatch(this.testData.xs, this.testData.ys, 5);
             const predictions = this.model.predict(batch.xs);
             const predLabels = predictions.argMax(-1).dataSync();
             const trueLabels = batch.ys.argMax(-1).dataSync();
             
             // Display preview
-            this.displayPreview(batch.xs, predLabels, trueLabels);
+            const previewContainer = document.getElementById('preview');
+            previewContainer.innerHTML = '';
             
-            // Clean up
+            for (let i = 0; i < 5; i++) {
+                const previewItem = document.createElement('div');
+                previewItem.className = 'preview-item';
+                
+                const canvas = document.createElement('canvas');
+                this.dataLoader.draw28x28ToCanvas(batch.xs.slice([i, 0, 0, 0], [1, 28, 28, 1]), canvas);
+                
+                const predLabel = document.createElement('div');
+                predLabel.innerHTML = `<strong>Pred:</strong> ${predLabels[i]} | <strong>True:</strong> ${trueLabels[i]}`;
+                predLabel.className = predLabels[i] === trueLabels[i] ? 'correct' : 'incorrect';
+                
+                previewItem.appendChild(canvas);
+                previewItem.appendChild(predLabel);
+                previewContainer.appendChild(previewItem);
+            }
+            
+            // Cleanup
             predictions.dispose();
             batch.xs.dispose();
             batch.ys.dispose();
             
         } catch (error) {
-            this.log(`Test error: ${error.message}`);
-            console.error('Test error:', error);
+            this.log(`Test preview error: ${error.message}`);
+            console.error(error);
         }
     }
 
     /**
-     * Display preview of test samples with predictions
-     * @param {tf.Tensor} images - Image tensors
-     * @param {Array} predLabels - Predicted labels
-     * @param {Array} trueLabels - True labels
-     */
-    displayPreview(images, predLabels, trueLabels) {
-        const container = document.getElementById('previewContainer');
-        container.innerHTML = '';
-        
-        // Create preview items
-        for (let i = 0; i < 5; i++) {
-            const previewItem = document.createElement('div');
-            previewItem.className = 'preview-item';
-            
-            const canvas = document.createElement('canvas');
-            const labelDiv = document.createElement('div');
-            
-            // Draw image
-            const imageSlice = images.slice([i, 0, 0, 0], [1, 28, 28, 1]);
-            this.dataLoader.draw28x28ToCanvas(imageSlice, canvas, 4);
-            imageSlice.dispose();
-            
-            // Display prediction and true label
-            const isCorrect = predLabels[i] === trueLabels[i];
-            labelDiv.innerHTML = `
-                <strong>Pred:</strong> <span class="${isCorrect ? 'correct' : 'incorrect'}">${predLabels[i]}</span><br>
-                <strong>True:</strong> ${trueLabels[i]}
-            `;
-            
-            previewItem.appendChild(canvas);
-            previewItem.appendChild(labelDiv);
-            container.appendChild(previewItem);
-        }
-    }
-
-    /**
-     * Save model to files
+     * Save model to downloadable files
      */
     async onSaveDownload() {
         if (!this.model) {
-            alert('No model to save');
+            alert('No model to save. Please train a model first.');
             return;
         }
 
         try {
             await this.model.save('downloads://mnist-cnn');
-            this.log('Model saved successfully!');
+            this.log('Model saved successfully. Check your downloads folder.');
         } catch (error) {
-            this.log(`Save error: ${error.message}`);
-            console.error('Save error:', error);
+            this.log(`Model save error: ${error.message}`);
+            console.error(error);
         }
     }
 
     /**
-     * Load model from files
+     * Load model from uploaded files
      */
     async onLoadFromFiles() {
         try {
-            const jsonFile = document.getElementById('modelJsonFile').files[0];
-            const weightsFile = document.getElementById('modelWeightsFile').files[0];
+            const jsonFile = document.getElementById('modelJson').files[0];
+            const weightsFile = document.getElementById('modelWeights').files[0];
             
             if (!jsonFile || !weightsFile) {
-                alert('Please select both model files');
+                alert('Please select both model JSON and weights files.');
                 return;
             }
 
             this.log('Loading model...');
-            this.model = await tf.loadLayersModel(
-                tf.io.browserFiles([jsonFile, weightsFile])
-            );
             
-            this.updateModelInfo();
-            document.getElementById('saveModel').disabled = false;
+            this.model = await tf.loadLayersModel(tf.io.browserFiles([jsonFile, weightsFile]));
+            
+            // Update UI
             document.getElementById('evaluate').disabled = false;
             document.getElementById('testFive').disabled = false;
+            document.getElementById('saveModel').disabled = false;
+            
+            // Display model info
+            this.model.summary();
+            const totalParams = this.model.countParams();
+            const layers = this.model.layers.length;
+            
+            document.getElementById('modelInfo').innerHTML = `
+                Layers: ${layers}<br>
+                Total parameters: ${totalParams.toLocaleString()}
+            `;
             
             this.log('Model loaded successfully!');
             
         } catch (error) {
             this.log(`Model load error: ${error.message}`);
-            console.error('Model load error:', error);
+            console.error(error);
         }
-    }
-
-    /**
-     * Update model information display
-     */
-    updateModelInfo() {
-        if (!this.model) return;
-        
-        let totalParams = 0;
-        this.model.summary(null, null, (line) => {
-            const match = line.match(/params:\s+([\d,]+)/);
-            if (match) {
-                totalParams += parseInt(match[1].replace(/,/g, ''));
-            }
-        });
-        
-        document.getElementById('modelInfo').innerHTML = `
-            Layers: ${this.model.layers.length}<br>
-            Total parameters: ${totalParams.toLocaleString()}
-        `;
     }
 
     /**
      * Reset application state
      */
     onReset() {
-        if (this.isTraining) {
-            alert('Cannot reset during training');
-            return;
-        }
-
-        // Dispose model and data
+        // Cleanup tensors and model
         if (this.model) {
             this.model.dispose();
             this.model = null;
         }
         
         this.dataLoader.dispose();
+        this.trainData = null;
+        this.testData = null;
         
         // Reset UI
-        document.getElementById('dataStatus').textContent = 'No data loaded';
-        document.getElementById('modelInfo').textContent = 'No model loaded';
-        document.getElementById('metrics').textContent = 'No evaluation performed';
-        document.getElementById('previewContainer').innerHTML = '';
-        
-        // Reset buttons
         document.getElementById('train').disabled = true;
         document.getElementById('evaluate').disabled = true;
         document.getElementById('testFive').disabled = true;
         document.getElementById('saveModel').disabled = true;
-        document.getElementById('loadModel').disabled = true;
         
-        // Clear file inputs
-        document.getElementById('trainFile').value = '';
-        document.getElementById('testFile').value = '';
-        document.getElementById('modelJsonFile').value = '';
-        document.getElementById('modelWeightsFile').value = '';
+        document.getElementById('dataStatus').innerHTML = 'No data loaded';
+        document.getElementById('modelInfo').innerHTML = 'No model loaded';
+        document.getElementById('metrics').innerHTML = 'No metrics available';
+        document.getElementById('preview').innerHTML = '';
         
-        this.log('Application reset');
+        this.log('Application reset.');
     }
 
     /**
@@ -433,21 +384,20 @@ class MNISTApp {
     }
 
     /**
-     * Add message to training logs
-     * @param {string} message - Log message
+     * Log message to UI
+     * @param {string} message - Message to log
      */
     log(message) {
-        const logs = document.getElementById('trainingLogs');
+        const logsElement = document.getElementById('logs');
         const timestamp = new Date().toLocaleTimeString();
         const logEntry = document.createElement('div');
         logEntry.textContent = `[${timestamp}] ${message}`;
-        logs.appendChild(logEntry);
-        logs.scrollTop = logs.scrollHeight;
+        logsElement.appendChild(logEntry);
+        logsElement.scrollTop = logsElement.scrollHeight;
     }
 }
 
-// Initialize application when page loads
-let app;
+// Initialize application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    app = new MNISTApp();
+    window.mnistApp = new MNISTApp();
 });
