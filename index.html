@@ -1,154 +1,211 @@
-<!-- index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MNIST CNN Training (Client-Side)</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-vis@latest"></script>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            background-color: #f5f5f5;
-        }
-        .container {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        .panel {
-            background: white;
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .controls {
-            grid-column: 1 / -1;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-        button {
-            padding: 8px 16px;
-            background: #007cba;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        button:hover {
-            background: #005a87;
-        }
-        button:disabled {
-            background: #cccccc;
-            cursor: not-allowed;
-        }
-        .file-inputs {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-        .preview-container {
-            display: flex;
-            gap: 10px;
-            margin-top: 15px;
-        }
-        .preview-item {
-            text-align: center;
-        }
-        canvas {
-            border: 1px solid #ddd;
-            image-rendering: pixelated;
-        }
-        .correct {
-            color: green;
-            font-weight: bold;
-        }
-        .incorrect {
-            color: red;
-            font-weight: bold;
-        }
-        .status {
-            margin: 10px 0;
-            padding: 10px;
-            background: #f0f0f0;
-            border-radius: 4px;
-        }
-        .logs {
-            height: 150px;
-            overflow-y: auto;
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 10px;
-            border-radius: 4px;
-            font-family: monospace;
-            font-size: 12px;
-        }
-    </style>
+  <meta charset="utf-8" />
+  <title>MNIST CNN — TensorFlow.js (Browser-only)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- TensorFlow.js + tfjs-vis CDNs -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-vis@latest"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #111827;
+      --muted: #94a3b8;
+      --text: #e5e7eb;
+      --accent: #22c55e;
+      --danger: #ef4444;
+      --primary: #3b82f6;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      background: linear-gradient(180deg, #0b1220, #0e1628);
+      color: var(--text);
+      padding: 24px;
+    }
+    h1 { margin: 0 0 12px; font-weight: 800; letter-spacing: .2px; }
+    .sub { color: var(--muted); margin-bottom: 18px; }
+    .page {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    @media (min-width: 980px) {
+      .page { grid-template-columns: 1fr 1fr; }
+    }
+    .bar, .loadbar {
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.06);
+      border-radius: 14px;
+      padding: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 12px;
+      align-items: center;
+    }
+    label.inline {
+      display: inline-flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    input[type="file"] {
+      background: var(--card);
+      color: var(--text);
+      border: 1px dashed rgba(255,255,255,.15);
+      padding: 8px;
+      border-radius: 10px;
+      max-width: 280px;
+    }
+    button {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,.12);
+      background: linear-gradient(180deg, #1f2937, #111827);
+      color: var(--text);
+      padding: 9px 14px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform .04s ease, filter .2s ease, background .2s ease;
+    }
+    button:hover { filter: brightness(1.1); transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    button.primary { border-color: rgba(59,130,246,.5); background: linear-gradient(180deg, #2563eb, #1d4ed8); }
+    button.success { border-color: rgba(34,197,94,.5); background: linear-gradient(180deg, #16a34a, #15803d); }
+    button.warn { border-color: rgba(234,179,8,.5); background: linear-gradient(180deg, #eab308, #a16207); }
+    button.ghost { background: rgba(255,255,255,.06); }
+    button:disabled { opacity: .5; cursor: not-allowed; filter: grayscale(.4); }
+    .card {
+      background: var(--card);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 14px;
+      padding: 16px;
+      min-height: 120px;
+    }
+    .card h2 { margin: 0 0 10px; font-size: 18px; }
+    .status {
+      padding: 10px;
+      border-radius: 10px;
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,.06);
+      min-height: 44px;
+    }
+    .logs {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      background: #0b0f1a;
+      color: #d1d5db;
+      height: 180px;
+      overflow: auto;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,.08);
+      padding: 10px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    @media (min-width: 980px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+    }
+    .preview-row {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0,1fr));
+      gap: 12px;
+      align-items: start;
+    }
+    .pitem { text-align: center; }
+    canvas.preview {
+      width: 112px; height: 112px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,.08);
+      image-rendering: pixelated;
+      background: #0b0f1a;
+    }
+    .ok { color: var(--accent); font-weight: 700; }
+    .bad { color: var(--danger); font-weight: 700; }
+    .muted { color: var(--muted); }
+    .list { line-height: 1.6; }
+  </style>
 </head>
 <body>
-    <h1>MNIST CNN Training (Client-Side)</h1>
-    
-    <div class="file-inputs">
-        <div>
-            <label>Upload Train CSV</label>
-            <input type="file" id="trainFile" accept=".csv">
-        </div>
-        <div>
-            <label>Upload Test CSV</label>
-            <input type="file" id="testFile" accept=".csv">
-        </div>
+  <h1>MNIST CNN — Browser-only</h1>
+  <div class="sub">Upload your <strong>mnist_train.csv</strong> and <strong>mnist_test.csv</strong>, train entirely on-device, visualize metrics, and save / reload the model (no IndexedDB, files only).</div>
+
+  <!-- File pickers for CSV data -->
+  <div class="loadbar">
+    <label class="inline">Upload Train CSV
+      <input id="trainFile" type="file" accept=".csv" />
+    </label>
+    <label class="inline">Upload Test CSV
+      <input id="testFile" type="file" accept=".csv" />
+    </label>
+    <button id="loadData" class="primary">Load Data</button>
+    <button id="toggleVisor" class="ghost">Toggle Visor</button>
+  </div>
+
+  <!-- Controls -->
+  <div class="bar">
+    <button id="train" class="success" disabled>Train</button>
+    <button id="evaluate" disabled>Evaluate</button>
+    <button id="testFive" disabled>Test 5 Random</button>
+    <button id="saveModel" disabled>Save Model (Download)</button>
+    <button id="reset" class="warn">Reset</button>
+    <span class="muted" style="margin-left:auto">Model Load From Files:</span>
+    <label class="inline">model.json
+      <input id="modelJson" type="file" accept=".json" />
+    </label>
+    <label class="inline">weights.bin
+      <input id="modelWeights" type="file" accept=".bin" />
+    </label>
+    <button id="loadModel">Load Model (From Files)</button>
+  </div>
+
+  <div class="page">
+    <div class="grid">
+      <div class="card">
+        <h2>Data Status</h2>
+        <div id="dataStatus" class="status">No data loaded</div>
+      </div>
+
+      <div class="card">
+        <h2>Model Info</h2>
+        <div id="modelInfo" class="status">No model</div>
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1">
+        <h2>Training Logs</h2>
+        <div id="logs" class="logs" aria-live="polite"></div>
+      </div>
     </div>
 
-    <div class="controls">
-        <button id="loadData">Load Data</button>
-        <button id="train" disabled>Train</button>
-        <button id="evaluate" disabled>Evaluate</button>
-        <button id="testFive" disabled>Test 5 Random</button>
-        <button id="saveModel" disabled>Save Model</button>
-        <button id="reset">Reset</button>
-        <button id="toggleVisor">Toggle Visor</button>
-    </div>
+    <div class="grid">
+      <div class="card" style="grid-column: 1 / -1">
+        <h2>Random 5 Preview</h2>
+        <div id="preview" class="preview-row"></div>
+      </div>
 
-    <div class="file-inputs">
-        <div>
-            <label>Load Model JSON</label>
-            <input type="file" id="modelJson" accept=".json">
+      <div class="card" style="grid-column: 1 / -1">
+        <h2>Metrics</h2>
+        <div id="metrics" class="status">
+          No metrics yet. After training/evaluating, overall accuracy appears here. Detailed charts live in the Visor.
         </div>
-        <div>
-            <label>Load Model Weights</label>
-            <input type="file" id="modelWeights" accept=".bin">
+        <div class="list muted" style="margin-top:8px">
+          <div>• Live training: loss / val_loss and acc / val_acc</div>
+          <div>• Evaluation: confusion matrix + per-class accuracy</div>
         </div>
-        <button id="loadModel">Load Model</button>
+      </div>
     </div>
+  </div>
 
-    <div class="container">
-        <div class="panel">
-            <h2>Data Status</h2>
-            <div id="dataStatus" class="status">No data loaded</div>
-            
-            <h2>Model Info</h2>
-            <div id="modelInfo" class="status">No model loaded</div>
-            
-            <h2>Training Logs</h2>
-            <div id="logs" class="logs"></div>
-        </div>
-        
-        <div class="panel">
-            <h2>Random 5 Preview</h2>
-            <div id="preview" class="preview-container"></div>
-            
-            <h2>Metrics</h2>
-            <div id="metrics" class="status">No metrics available</div>
-        </div>
-    </div>
-
-    <script src="data-loader.js"></script>
-    <script src="app.js"></script>
+  <!-- Defer-load app scripts -->
+  <script defer src="data-loader.js"></script>
+  <script defer src="app.js"></script>
 </body>
 </html>
