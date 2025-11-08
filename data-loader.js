@@ -1,4 +1,4 @@
-// data-loader.js
+// data-loader.js - FIXED VERSION
 /**
  * Data loader utility for MNIST CSV files
  * Handles file parsing, normalization, and tensor management
@@ -16,10 +16,8 @@ class DataLoader {
      * @returns {Promise<{xs: tf.Tensor, ys: tf.Tensor}>} Normalized images and one-hot labels
      */
     async loadTrainFromFiles(file) {
-        return tf.tidy(() => {
-            const data = this.parseCSV(file);
-            return this.processData(data);
-        });
+        const data = await this.parseCSV(file);
+        return this.processData(data);
     }
 
     /**
@@ -28,10 +26,8 @@ class DataLoader {
      * @returns {Promise<{xs: tf.Tensor, ys: tf.Tensor}>} Normalized images and one-hot labels
      */
     async loadTestFromFiles(file) {
-        return tf.tidy(() => {
-            const data = this.parseCSV(file);
-            return this.processData(data);
-        });
+        const data = await this.parseCSV(file);
+        return this.processData(data);
     }
 
     /**
@@ -53,7 +49,7 @@ class DataLoader {
                         const values = line.split(',').map(val => parseInt(val.trim()));
                         
                         if (values.length !== 785) {
-                            console.warn('Skipping invalid line:', line);
+                            console.warn('Skipping invalid line - expected 785 values, got:', values.length);
                             continue;
                         }
                         
@@ -63,6 +59,12 @@ class DataLoader {
                         data.push({ label, pixels });
                     }
                     
+                    if (data.length === 0) {
+                        reject(new Error('No valid data found in CSV file'));
+                        return;
+                    }
+                    
+                    console.log(`Parsed ${data.length} samples from CSV`);
                     resolve(data);
                 } catch (error) {
                     reject(new Error(`CSV parsing error: ${error.message}`));
@@ -95,6 +97,8 @@ class DataLoader {
             
             // Normalize pixel values to [0, 1]
             const normalizedXs = xs.div(255);
+            
+            console.log(`Processed data - X shape: ${normalizedXs.shape}, Y shape: ${ys.shape}`);
             
             return { xs: normalizedXs, ys: ys };
         });
