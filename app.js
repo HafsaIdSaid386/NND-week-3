@@ -122,7 +122,7 @@ class MNISTApp {
     }
 
     /**
-     * Create CNN Autoencoder for denoising (Step 2 of homework)
+     * Create SIMPLER CNN Autoencoder for denoising (Step 2 of homework)
      */
     createDenoisingAutoencoder() {
         const model = tf.sequential();
@@ -130,12 +130,26 @@ class MNISTApp {
         // Encoder
         model.add(tf.layers.conv2d({
             inputShape: [28, 28, 1],
-            filters: 32,
+            filters: 16,  // Reduced filters
             kernelSize: 3,
             activation: 'relu',
             padding: 'same'
         }));
-        model.add(tf.layers.maxPooling2d({poolSize: 2, padding: 'same'}));
+        
+        model.add(tf.layers.conv2d({
+            filters: 8,   // Reduced filters
+            kernelSize: 3,
+            activation: 'relu',
+            padding: 'same'
+        }));
+        
+        // Decoder - maintain same spatial dimensions
+        model.add(tf.layers.conv2d({
+            filters: 8,
+            kernelSize: 3,
+            activation: 'relu',
+            padding: 'same'
+        }));
         
         model.add(tf.layers.conv2d({
             filters: 16,
@@ -144,27 +158,11 @@ class MNISTApp {
             padding: 'same'
         }));
         
-        // Decoder
-        model.add(tf.layers.conv2d({
-            filters: 16,
-            kernelSize: 3,
-            activation: 'relu',
-            padding: 'same'
-        }));
-        model.add(tf.layers.upSampling2d({size: 2}));
-        
-        model.add(tf.layers.conv2d({
-            filters: 32,
-            kernelSize: 3,
-            activation: 'relu',
-            padding: 'same'
-        }));
-        
-        // Output layer - reconstruct original image
+        // Output layer - reconstruct original image (same shape as input)
         model.add(tf.layers.conv2d({
             filters: 1,
             kernelSize: 3,
-            activation: 'sigmoid',
+            activation: 'sigmoid',  // Use sigmoid for pixel values [0,1]
             padding: 'same'
         }));
         
@@ -190,24 +188,29 @@ class MNISTApp {
             this.model = this.createDenoisingAutoencoder();
             this.updateModelInfo();
             
-            // Use smaller subset for faster training
-            const numSamples = Math.min(2000, this.dataLoader.trainData.xs.shape[0]);
-            const trainSubset = tf.tidy(() => {
+            // Use smaller subset for faster training and debugging
+            const numSamples = Math.min(1000, this.dataLoader.trainData.xs.shape[0]);
+            
+            this.log(`Using ${numSamples} samples for training`);
+            
+            // Create noisy inputs and clean targets
+            const trainingData = tf.tidy(() => {
                 const indices = Array.from({length: numSamples}, (_, i) => i);
                 const cleanImages = tf.gather(this.dataLoader.trainData.xs, indices);
-                return cleanImages;
+                const noisyImages = this.addNoise(cleanImages, 0.5);
+                return { noisyImages, cleanImages };
             });
             
-            this.log(`Step 2: Training autoencoder on ${numSamples} samples`);
+            this.log('Step 2: Training autoencoder (noisy → clean)');
             
             let currentEpoch = 0;
             
-            // Train autoencoder
+            // Train autoencoder: input=noisy, target=clean
             const history = await this.model.fit(
-                trainSubset,  // Input: clean images
-                trainSubset,  // Target: same clean images (autoencoder)
+                trainingData.noisyImages,  // Input: noisy images
+                trainingData.cleanImages,  // Target: clean images
                 {
-                    epochs: 5,
+                    epochs: 3,  // Reduced for testing
                     batchSize: 32,
                     validationSplit: 0.1,
                     shuffle: true,
@@ -217,14 +220,15 @@ class MNISTApp {
                             this.log(`Epoch ${epoch + 1}: Training denoiser...`);
                         },
                         onEpochEnd: (epoch, logs) => {
-                            this.log(`Epoch ${epoch + 1} completed - Loss: ${logs.loss.toFixed(4)}, Val Loss: ${logs.val_loss ? logs.val_loss.toFixed(4) : 'N/A'}`);
+                            this.log(`Epoch ${epoch + 1} completed - Loss: ${logs.loss.toFixed(4)}${logs.val_loss ? `, Val Loss: ${logs.val_loss.toFixed(4)}` : ''}`);
                         }
                     }
                 }
             );
             
             // Clean up
-            trainSubset.dispose();
+            trainingData.noisyImages.dispose();
+            trainingData.cleanImages.dispose();
             
             this.log('Denoising autoencoder training completed!');
             this.log('Ready to test denoising on noisy images.');
@@ -291,7 +295,7 @@ class MNISTApp {
         try {
             this.log('Testing denoising on 5 random images...');
             
-            // Get random batch
+            // Get clean test images
             const batch = this.dataLoader.getRandomTestBatch(
                 this.dataLoader.testData.xs,
                 this.dataLoader.testData.ys,
