@@ -1,3 +1,8 @@
+// Force TensorFlow.js to use CPU backend to avoid WebGL issues
+tf.setBackend('cpu').then(() => {
+    console.log('Using CPU backend');
+});
+
 class MNISTApp {
     constructor() {
         this.dataLoader = new DataLoader();
@@ -84,6 +89,10 @@ class MNISTApp {
             this.log('Loading test data...');
             await this.dataLoader.loadTestFromFiles(testFile);
             
+            // Debug: Check data shapes
+            console.log('Train data shape:', this.dataLoader.trainData.xs.shape);
+            console.log('Test data shape:', this.dataLoader.testData.xs.shape);
+            
             const trainSamples = this.dataLoader.trainData.xs.shape[0];
             const testSamples = this.dataLoader.testData.xs.shape[0];
             
@@ -102,26 +111,19 @@ class MNISTApp {
     }
 
     createModel() {
+        // Simplified model to avoid WebGL issues
         const model = tf.sequential({
             layers: [
                 tf.layers.conv2d({
                     inputShape: [28, 28, 1],
-                    filters: 32,
-                    kernelSize: 3,
-                    activation: 'relu',
-                    padding: 'same'
-                }),
-                tf.layers.conv2d({
-                    filters: 64,
+                    filters: 8,  // Reduced from 32
                     kernelSize: 3,
                     activation: 'relu',
                     padding: 'same'
                 }),
                 tf.layers.maxPooling2d({ poolSize: 2 }),
-                tf.layers.dropout({ rate: 0.25 }),
                 tf.layers.flatten(),
-                tf.layers.dense({ units: 128, activation: 'relu' }),
-                tf.layers.dropout({ rate: 0.5 }),
+                tf.layers.dense({ units: 64, activation: 'relu' }), // Reduced from 128
                 tf.layers.dense({ units: 10, activation: 'softmax' })
             ]
         });
@@ -142,6 +144,7 @@ class MNISTApp {
             this.isTraining = true;
             this.updateUIState();
             this.log('Starting model training...');
+            this.log('Using CPU backend for stable training');
             
             if (!this.model) {
                 this.model = this.createModel();
@@ -155,16 +158,17 @@ class MNISTApp {
             
             this.updateModelInfo();
             
+            // Use simpler training parameters
             const history = await this.model.fit(trainXs, trainYs, {
-                epochs: 5,
-                batchSize: 128,
+                epochs: 3,  // Reduced for testing
+                batchSize: 32,  // Reduced from 128
                 validationData: [valXs, valYs],
                 shuffle: true,
-                callbacks: tfvis.show.fitCallbacks(
-                    { name: 'Training Performance' },
-                    ['loss', 'acc', 'val_loss', 'val_acc'],
-                    { callbacks: ['onEpochEnd'] }
-                )
+                callbacks: {
+                    onEpochEnd: (epoch, logs) => {
+                        this.log(`Epoch ${epoch + 1} - loss: ${logs.loss.toFixed(4)}, acc: ${logs.acc.toFixed(4)}, val_loss: ${logs.val_loss.toFixed(4)}, val_acc: ${logs.val_acc.toFixed(4)}`);
+                    }
+                }
             });
             
             const finalAcc = history.history.acc[history.history.acc.length - 1];
@@ -175,7 +179,8 @@ class MNISTApp {
             
         } catch (error) {
             this.log(`Training error: ${error.message}`);
-            alert(`Training failed: ${error.message}`);
+            console.error('Detailed training error:', error);
+            alert(`Training failed: ${error.message}. Check console for details.`);
         } finally {
             this.isTraining = false;
             this.updateUIState();
@@ -221,31 +226,37 @@ class MNISTApp {
     }
 
     async createEvaluationCharts(predictions, trueLabels) {
-        const predictedLabels = await tf.argMax(predictions, 1).array();
-        const actualLabels = await tf.argMax(trueLabels, 1).array();
-        
-        const confusionMatrix = await tfvis.metrics.confusionMatrix(actualLabels, predictedLabels);
-        tfvis.render.confusionMatrix(
-            { name: 'Confusion Matrix', tab: 'Evaluation' },
-            { values: confusionMatrix },
-            { shadeDiagonal: true }
-        );
-        
-        const classAccuracy = [];
-        const numClasses = 10;
-        
-        for (let i = 0; i < numClasses; i++) {
-            const classIndices = actualLabels.map((label, idx) => label === i);
-            const correct = classIndices.filter((isClass, idx) => isClass && predictedLabels[idx] === i).length;
-            const total = classIndices.filter(isClass => isClass).length;
-            classAccuracy.push(total > 0 ? correct / total : 0);
+        try {
+            const predictedLabels = await tf.argMax(predictions, 1).array();
+            const actualLabels = await tf.argMax(trueLabels, 1).array();
+            
+            // Confusion matrix
+            const confusionMatrix = await tfvis.metrics.confusionMatrix(actualLabels, predictedLabels);
+            tfvis.render.confusionMatrix(
+                { name: 'Confusion Matrix', tab: 'Evaluation' },
+                { values: confusionMatrix },
+                { shadeDiagonal: true }
+            );
+            
+            // Per-class accuracy
+            const classAccuracy = [];
+            const numClasses = 10;
+            
+            for (let i = 0; i < numClasses; i++) {
+                const classIndices = actualLabels.map((label, idx) => label === i);
+                const correct = classIndices.filter((isClass, idx) => isClass && predictedLabels[idx] === i).length;
+                const total = classIndices.filter(isClass => isClass).length;
+                classAccuracy.push(total > 0 ? correct / total : 0);
+            }
+            
+            tfvis.render.barchart(
+                { name: 'Per-Class Accuracy', tab: 'Evaluation' },
+                { values: classAccuracy.map((acc, i) => ({ index: i, value: acc })) },
+                { yAxisDomain: [0, 1] }
+            );
+        } catch (error) {
+            this.log(`Chart error: ${error.message}`);
         }
-        
-        tfvis.render.barchart(
-            { name: 'Per-Class Accuracy', tab: 'Evaluation' },
-            { values: classAccuracy.map((acc, i) => ({ index: i, value: acc })) },
-            { yAxisDomain: [0, 1] }
-        );
     }
 
     async onTestFive() {
@@ -380,6 +391,7 @@ class MNISTApp {
     }
 }
 
+// Initialize application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     new MNISTApp();
 });
