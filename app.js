@@ -1,465 +1,453 @@
-// Set CPU backend for reliability
-tf.setBackend('cpu').then(() => {
-    console.log('TensorFlow.js ready - Using CPU backend');
-});
-
+// app.js
 /**
- * Main MNIST Denoising Autoencoder Application
+ * Main application for MNIST CNN classifier
+ * Handles UI interactions, model training, and evaluation
  */
+
 class MNISTApp {
     constructor() {
         this.dataLoader = new DataLoader();
         this.model = null;
         this.isTraining = false;
+        this.currentEpoch = 0;
+        
         this.initializeUI();
-        this.bindEvents();
+        this.log('Application initialized. Please load MNIST data files.');
     }
 
+    /**
+     * Initialize UI event listeners
+     */
     initializeUI() {
-        this.elements = {
-            trainFile: document.getElementById('trainFile'),
-            testFile: document.getElementById('testFile'),
-            modelJson: document.getElementById('modelJson'),
-            modelWeights: document.getElementById('modelWeights'),
-            loadData: document.getElementById('loadData'),
-            useTestData: document.getElementById('useTestData'),
-            train: document.getElementById('train'),
-            evaluate: document.getElementById('evaluate'),
-            testFive: document.getElementById('testFive'),
-            saveModel: document.getElementById('saveModel'),
-            loadModel: document.getElementById('loadModel'),
-            reset: document.getElementById('reset'),
-            toggleVisor: document.getElementById('toggleVisor'),
-            dataStatus: document.getElementById('dataStatus'),
-            modelInfo: document.getElementById('modelInfo'),
-            trainingLogs: document.getElementById('trainingLogs'),
-            imagePreview: document.getElementById('imagePreview'),
-            predictionResults: document.getElementById('predictionResults'),
-            metrics: document.getElementById('metrics')
-        };
-        
-        this.updateUIState();
+        // File input handlers
+        document.getElementById('loadData').addEventListener('click', () => this.onLoadData());
+        document.getElementById('train').addEventListener('click', () => this.onTrain());
+        document.getElementById('evaluate').addEventListener('click', () => this.onEvaluate());
+        document.getElementById('testFive').addEventListener('click', () => this.onTestFive());
+        document.getElementById('saveModel').addEventListener('click', () => this.onSaveDownload());
+        document.getElementById('loadModel').addEventListener('click', () => this.onLoadFromFiles());
+        document.getElementById('reset').addEventListener('click', () => this.onReset());
+        document.getElementById('toggleVisor').addEventListener('click', () => this.toggleVisor());
+
+        // Enable load model button when files are selected
+        document.getElementById('modelJsonFile').addEventListener('change', () => this.checkModelFiles());
+        document.getElementById('modelWeightsFile').addEventListener('change', () => this.checkModelFiles());
     }
 
-    bindEvents() {
-        this.elements.loadData.addEventListener('click', () => this.onLoadData());
-        this.elements.useTestData.addEventListener('click', () => this.onUseTestData());
-        this.elements.train.addEventListener('click', () => this.onTrain());
-        this.elements.evaluate.addEventListener('click', () => this.onEvaluate());
-        this.elements.testFive.addEventListener('click', () => this.onTestFive());
-        this.elements.saveModel.addEventListener('click', () => this.onSaveDownload());
-        this.elements.loadModel.addEventListener('click', () => this.onLoadFromFiles());
-        this.elements.reset.addEventListener('click', () => this.onReset());
-        this.elements.toggleVisor.addEventListener('click', () => this.toggleVisor());
-        
-        this.elements.modelJson.addEventListener('change', () => this.checkModelFiles());
-        this.elements.modelWeights.addEventListener('change', () => this.checkModelFiles());
-    }
-
+    /**
+     * Check if both model files are selected and enable load button
+     */
     checkModelFiles() {
-        const hasJson = this.elements.modelJson.files.length > 0;
-        const hasWeights = this.elements.modelWeights.files.length > 0;
-        this.elements.loadModel.disabled = !(hasJson && hasWeights);
+        const jsonFile = document.getElementById('modelJsonFile').files[0];
+        const weightsFile = document.getElementById('modelWeightsFile').files[0];
+        document.getElementById('loadModel').disabled = !(jsonFile && weightsFile);
     }
 
-    updateUIState() {
-        const hasData = this.dataLoader.trainData && this.dataLoader.testData;
-        const hasModel = this.model !== null;
-        
-        this.elements.train.disabled = !hasData || this.isTraining;
-        this.elements.evaluate.disabled = !hasModel || !hasData;
-        this.elements.testFive.disabled = !hasModel || !hasData;
-        this.elements.saveModel.disabled = !hasModel;
-    }
-
-    log(message) {
-        const timestamp = new Date().toLocaleTimeString();
-        this.elements.trainingLogs.innerHTML += `[${timestamp}] ${message}<br>`;
-        this.elements.trainingLogs.scrollTop = this.elements.trainingLogs.scrollHeight;
-        console.log(message);
-    }
-
+    /**
+     * Load data from CSV files
+     */
     async onLoadData() {
         try {
-            const trainFile = this.elements.trainFile.files[0];
-            const testFile = this.elements.testFile.files[0];
+            const trainFile = document.getElementById('trainFile').files[0];
+            const testFile = document.getElementById('testFile').files[0];
             
             if (!trainFile || !testFile) {
                 alert('Please select both train and test CSV files');
                 return;
             }
-            
+
             this.log('Loading training data...');
-            await this.dataLoader.loadTrainFromFiles(trainFile);
+            const trainData = await this.dataLoader.loadTrainFromFiles(trainFile);
             
             this.log('Loading test data...');
-            await this.dataLoader.loadTestFromFiles(testFile);
-            
-            const trainSamples = this.dataLoader.trainData.xs.shape[0];
-            const testSamples = this.dataLoader.testData.xs.shape[0];
-            
-            this.elements.dataStatus.innerHTML = `
-                <span class="success">✓ Data Loaded Successfully!</span><br>
-                Train samples: ${trainSamples}<br>
-                Test samples: ${testSamples}<br>
-                <em>Click "Train Model" to start training</em>
+            const testData = await this.dataLoader.loadTestFromFiles(testFile);
+
+            // Update data status
+            document.getElementById('dataStatus').innerHTML = `
+                Train samples: ${trainData.xs.shape[0]}<br>
+                Test samples: ${testData.xs.shape[0]}
             `;
-            
-            this.log(`SUCCESS: Loaded ${trainSamples} training and ${testSamples} test samples`);
-            this.updateUIState();
+
+            // Enable buttons
+            document.getElementById('train').disabled = false;
+            document.getElementById('evaluate').disabled = false;
+            document.getElementById('testFive').disabled = false;
+
+            this.log('Data loaded successfully!');
             
         } catch (error) {
-            this.log(`ERROR: ${error.message}`);
-            this.elements.dataStatus.innerHTML = `
-                <span class="error">✗ Failed to load data</span><br>
-                Error: ${error.message}<br>
-                <button onclick="app.onUseTestData()" class="test-btn">Use Test Data Instead</button>
-            `;
+            this.log(`Error loading data: ${error.message}`);
+            console.error('Data loading error:', error);
         }
     }
 
-    async onUseTestData() {
-        try {
-            this.log('Creating synthetic test data...');
-            
-            this.dataLoader.trainData = this.dataLoader.createTestData();
-            this.dataLoader.testData = this.dataLoader.createTestData();
-            
-            const trainSamples = this.dataLoader.trainData.xs.shape[0];
-            const testSamples = this.dataLoader.testData.xs.shape[0];
-            
-            this.elements.dataStatus.innerHTML = `
-                <span class="success">✓ Using Synthetic Test Data</span><br>
-                Train samples: ${trainSamples}<br>
-                Test samples: ${testSamples}<br>
-                <em>You can now test the application</em>
-            `;
-            
-            this.log(`SUCCESS: Created ${trainSamples} synthetic samples`);
-            this.updateUIState();
-            
-        } catch (error) {
-            this.log(`ERROR creating test data: ${error.message}`);
-        }
-    }
-
-    addNoise(images, noiseFactor = 0.5) {
-        return tf.tidy(() => {
-            const noise = tf.randomNormal(images.shape, 0, noiseFactor);
-            return images.add(noise).clipByValue(0, 1);
-        });
-    }
-
-    createDenoisingAutoencoder() {
-        const model = tf.sequential({
-            layers: [
-                // Encoder
-                tf.layers.conv2d({
-                    inputShape: [28, 28, 1],
-                    filters: 32,
-                    kernelSize: 3,
-                    activation: 'relu',
-                    padding: 'same'
-                }),
-                tf.layers.conv2d({
-                    filters: 16,
-                    kernelSize: 3,
-                    activation: 'relu',
-                    padding: 'same'
-                }),
-                
-                // Decoder
-                tf.layers.conv2d({
-                    filters: 16,
-                    kernelSize: 3,
-                    activation: 'relu',
-                    padding: 'same'
-                }),
-                tf.layers.conv2d({
-                    filters: 32,
-                    kernelSize: 3,
-                    activation: 'relu',
-                    padding: 'same'
-                }),
-                
-                // Output
-                tf.layers.conv2d({
-                    filters: 1,
-                    kernelSize: 3,
-                    activation: 'sigmoid',
-                    padding: 'same'
-                })
-            ]
-        });
-        
-        model.compile({
-            optimizer: 'adam',
-            loss: 'meanSquaredError',
-            metrics: ['mse']
-        });
-        
-        return model;
-    }
-
+    /**
+     * Create and train CNN model
+     */
     async onTrain() {
-        if (this.isTraining) return;
-        
+        if (this.isTraining) {
+            alert('Training already in progress');
+            return;
+        }
+
         try {
             this.isTraining = true;
-            this.updateUIState();
-            this.log('Starting denoising autoencoder training...');
-            
+            this.log('Starting model training...');
+
             // Create model
-            this.model = this.createDenoisingAutoencoder();
+            this.model = this.createModel();
             this.updateModelInfo();
-            
-            // Use reasonable sample size
-            const numSamples = Math.min(500, this.dataLoader.trainData.xs.shape[0]);
-            this.log(`Training on ${numSamples} samples...`);
-            
-            const trainingData = tf.tidy(() => {
-                const indices = Array.from({length: numSamples}, (_, i) => i);
-                const cleanImages = tf.gather(this.dataLoader.trainData.xs, indices);
-                const noisyImages = this.addNoise(cleanImages, 0.5);
-                return { noisyImages, cleanImages };
-            });
-            
-            // Train the model
-            await this.model.fit(
-                trainingData.noisyImages,
-                trainingData.cleanImages,
-                {
-                    epochs: 8,
-                    batchSize: 32,
-                    validationSplit: 0.2,
-                    shuffle: true,
-                    callbacks: {
-                        onEpochEnd: (epoch, logs) => {
-                            const progress = ((epoch + 1) / 8 * 100).toFixed(0);
-                            this.log(`Epoch ${epoch + 1}/8 (${progress}%) - Loss: ${logs.loss.toFixed(4)}`);
-                        }
-                    }
-                }
+
+            // Split training data
+            const { trainXs, trainYs, valXs, valYs } = this.dataLoader.splitTrainVal(
+                this.dataLoader.trainData.xs, 
+                this.dataLoader.trainData.ys, 
+                0.1
             );
-            
-            trainingData.noisyImages.dispose();
-            trainingData.cleanImages.dispose();
-            
-            this.log('🎉 Training completed successfully!');
-            this.log('Model is ready for denoising tasks.');
-            
+
+            // Set up training callbacks
+            const fitCallbacks = tfvis.show.fitCallbacks(
+                { name: 'Training Metrics' },
+                ['loss', 'val_loss', 'acc', 'val_acc']
+            );
+
+            // Train model
+            const history = await this.model.fit(trainXs, trainYs, {
+                epochs: 10,
+                batchSize: 128,
+                validationData: [valXs, valYs],
+                shuffle: true,
+                callbacks: fitCallbacks
+            });
+
+            // Clean up tensors
+            trainXs.dispose();
+            trainYs.dispose();
+            valXs.dispose();
+            valYs.dispose();
+
+            this.log('Training completed!');
+            document.getElementById('saveModel').disabled = false;
+
         } catch (error) {
-            this.log(`❌ Training error: ${error.message}`);
+            this.log(`Training error: ${error.message}`);
             console.error('Training error:', error);
         } finally {
             this.isTraining = false;
-            this.updateUIState();
         }
     }
 
-    async onEvaluate() {
-        if (!this.model || !this.dataLoader.testData) return;
+    /**
+     * Create CNN model architecture
+     * @returns {tf.LayersModel} Compiled CNN model
+     */
+    createModel() {
+        const model = tf.sequential();
         
+        // First convolutional block
+        model.add(tf.layers.conv2d({
+            filters: 32,
+            kernelSize: 3,
+            activation: 'relu',
+            padding: 'same',
+            inputShape: [28, 28, 1]
+        }));
+        
+        // Second convolutional block
+        model.add(tf.layers.conv2d({
+            filters: 64,
+            kernelSize: 3,
+            activation: 'relu',
+            padding: 'same'
+        }));
+        
+        // Pooling and dropout
+        model.add(tf.layers.maxPooling2d({ poolSize: 2 }));
+        model.add(tf.layers.dropout({ rate: 0.25 }));
+        
+        // Flatten and dense layers
+        model.add(tf.layers.flatten());
+        model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
+        model.add(tf.layers.dropout({ rate: 0.5 }));
+        model.add(tf.layers.dense({ units: 10, activation: 'softmax' }));
+
+        // Compile model
+        model.compile({
+            optimizer: 'adam',
+            loss: 'categoricalCrossentropy',
+            metrics: ['accuracy']
+        });
+
+        return model;
+    }
+
+    /**
+     * Evaluate model on test data
+     */
+    async onEvaluate() {
+        if (!this.model) {
+            alert('Please train or load a model first');
+            return;
+        }
+
         try {
-            this.log('Evaluating denoising performance...');
+            this.log('Evaluating model...');
             
-            const testSize = Math.min(100, this.dataLoader.testData.xs.shape[0]);
-            const testSubset = tf.tidy(() => {
-                const indices = Array.from({length: testSize}, (_, i) => i);
-                return tf.gather(this.dataLoader.testData.xs, indices);
-            });
+            const testData = this.dataLoader.testData;
+            const evaluation = await this.model.evaluate(testData.xs, testData.ys);
+            const accuracy = evaluation[1].dataSync()[0];
             
-            const noisyTest = this.addNoise(testSubset, 0.5);
-            const denoised = this.model.predict(noisyTest);
-            
-            const mse = tf.losses.meanSquaredError(testSubset, denoised);
-            const mseValue = (await mse.data())[0];
-            
-            this.elements.metrics.innerHTML = `
-                <strong>Denoising Performance</strong><br>
-                Mean Squared Error: <strong>${mseValue.toFixed(6)}</strong><br>
-                <small>Lower values indicate better reconstruction</small>
+            // Update metrics
+            document.getElementById('metrics').innerHTML = `
+                Overall Accuracy: <strong>${(accuracy * 100).toFixed(2)}%</strong>
             `;
+
+            // Generate predictions for confusion matrix
+            const predictions = this.model.predict(testData.xs);
+            const predLabels = predictions.argMax(-1);
+            const trueLabels = testData.ys.argMax(-1);
+
+            // Create confusion matrix
+            const confusionMatrix = await tfvis.metrics.confusionMatrix(trueLabels, predLabels);
             
-            this.log(`Evaluation completed - MSE: ${mseValue.toFixed(6)}`);
+            // Show charts in visor
+            const confusionMatrixContainer = { name: 'Confusion Matrix', tab: 'Evaluation' };
+            tfvis.render.confusionMatrix(confusionMatrixContainer, confusionMatrix, 10);
             
-            testSubset.dispose();
-            noisyTest.dispose();
-            denoised.dispose();
-            mse.dispose();
+            // Calculate per-class accuracy
+            const classAccuracy = this.calculatePerClassAccuracy(confusionMatrix);
+            const accuracyContainer = { name: 'Per-Class Accuracy', tab: 'Evaluation' };
+            tfvis.render.barchart(accuracyContainer, classAccuracy);
+            
+            // Clean up
+            predictions.dispose();
+            predLabels.dispose();
+            trueLabels.dispose();
+            
+            this.log(`Evaluation completed. Accuracy: ${(accuracy * 100).toFixed(2)}%`);
             
         } catch (error) {
             this.log(`Evaluation error: ${error.message}`);
+            console.error('Evaluation error:', error);
         }
     }
 
+    /**
+     * Calculate per-class accuracy from confusion matrix
+     * @param {Array} confusionMatrix - Confusion matrix data
+     * @returns {Array} Per-class accuracy data
+     */
+    calculatePerClassAccuracy(confusionMatrix) {
+        return confusionMatrix.map((row, i) => {
+            const correct = row[i];
+            const total = row.reduce((sum, val) => sum + val, 0);
+            const accuracy = total > 0 ? correct / total : 0;
+            return {
+                index: i,
+                accuracy: accuracy,
+                label: `Class ${i}`
+            };
+        });
+    }
+
+    /**
+     * Test 5 random samples and display predictions
+     */
     async onTestFive() {
-        if (!this.model || !this.dataLoader.testData) return;
-        
+        if (!this.model || !this.dataLoader.testData) {
+            alert('Please load data and train a model first');
+            return;
+        }
+
         try {
-            this.log('Testing denoising on 5 random images...');
+            const testData = this.dataLoader.testData;
+            const batch = this.dataLoader.getRandomTestBatch(testData.xs, testData.ys, 5);
             
-            const batch = this.dataLoader.getRandomTestBatch(
-                this.dataLoader.testData.xs,
-                this.dataLoader.testData.ys,
-                5
-            );
+            const predictions = this.model.predict(batch.xs);
+            const predLabels = predictions.argMax(-1).dataSync();
+            const trueLabels = batch.ys.argMax(-1).dataSync();
             
-            const noisyImages = this.addNoise(batch.xs, 0.5);
-            const denoisedImages = this.model.predict(noisyImages);
+            // Display preview
+            this.displayPreview(batch.xs, predLabels, trueLabels);
             
-            this.elements.imagePreview.innerHTML = '';
-            this.elements.predictionResults.innerHTML = '<h4>Denoising Results</h4>';
-            
-            for (let i = 0; i < 5; i++) {
-                const row = document.createElement('div');
-                row.style.display = 'flex';
-                row.style.gap = '15px';
-                row.style.marginBottom: '20px';
-                row.style.alignItems: 'center';
-                row.style.justifyContent: 'center';
-                
-                const originalImg = this.createImageWithLabel(
-                    tf.slice(batch.xs, [i, 0, 0, 0], [1, 28, 28, 1]),
-                    'Original'
-                );
-                
-                const noisyImg = this.createImageWithLabel(
-                    tf.slice(noisyImages, [i, 0, 0, 0], [1, 28, 28, 1]),
-                    'Noisy'
-                );
-                
-                const denoisedImg = this.createImageWithLabel(
-                    tf.slice(denoisedImages, [i, 0, 0, 0], [1, 28, 28, 1]),
-                    'Denoised'
-                );
-                
-                row.appendChild(originalImg);
-                row.appendChild(noisyImg);
-                row.appendChild(denoisedImg);
-                this.elements.imagePreview.appendChild(row);
-            }
-            
-            this.log('Displayed denoising comparison for 5 images');
-            
-            tf.dispose([batch.xs, batch.ys, noisyImages, denoisedImages]);
+            // Clean up
+            predictions.dispose();
+            batch.xs.dispose();
+            batch.ys.dispose();
             
         } catch (error) {
             this.log(`Test error: ${error.message}`);
+            console.error('Test error:', error);
         }
     }
 
-    createImageWithLabel(tensor, label) {
-        const container = document.createElement('div');
-        container.style.display = 'flex';
-        container.style.flexDirection = 'column';
-        container.style.alignItems = 'center';
+    /**
+     * Display preview of test samples with predictions
+     * @param {tf.Tensor} images - Image tensors
+     * @param {Array} predLabels - Predicted labels
+     * @param {Array} trueLabels - True labels
+     */
+    displayPreview(images, predLabels, trueLabels) {
+        const container = document.getElementById('previewContainer');
+        container.innerHTML = '';
         
-        const canvas = document.createElement('canvas');
-        canvas.style.border = '2px solid #333';
-        this.dataLoader.draw28x28ToCanvas(tensor, canvas, 4);
-        
-        const labelDiv = document.createElement('div');
-        labelDiv.innerHTML = `<strong>${label}</strong>`;
-        labelDiv.style.marginTop = '8px';
-        labelDiv.style.fontWeight = 'bold';
-        
-        container.appendChild(canvas);
-        container.appendChild(labelDiv);
-        
-        return container;
+        // Create preview items
+        for (let i = 0; i < 5; i++) {
+            const previewItem = document.createElement('div');
+            previewItem.className = 'preview-item';
+            
+            const canvas = document.createElement('canvas');
+            const labelDiv = document.createElement('div');
+            
+            // Draw image
+            const imageSlice = images.slice([i, 0, 0, 0], [1, 28, 28, 1]);
+            this.dataLoader.draw28x28ToCanvas(imageSlice, canvas, 4);
+            imageSlice.dispose();
+            
+            // Display prediction and true label
+            const isCorrect = predLabels[i] === trueLabels[i];
+            labelDiv.innerHTML = `
+                <strong>Pred:</strong> <span class="${isCorrect ? 'correct' : 'incorrect'}">${predLabels[i]}</span><br>
+                <strong>True:</strong> ${trueLabels[i]}
+            `;
+            
+            previewItem.appendChild(canvas);
+            previewItem.appendChild(labelDiv);
+            container.appendChild(previewItem);
+        }
     }
 
+    /**
+     * Save model to files
+     */
     async onSaveDownload() {
-        if (!this.model) return;
-        
+        if (!this.model) {
+            alert('No model to save');
+            return;
+        }
+
         try {
-            this.log('Saving model...');
-            await this.model.save('downloads://mnist-denoising-autoencoder');
-            this.log('✅ Model saved successfully! Check your downloads folder.');
+            await this.model.save('downloads://mnist-cnn');
+            this.log('Model saved successfully!');
         } catch (error) {
-            this.log(`❌ Save error: ${error.message}`);
+            this.log(`Save error: ${error.message}`);
+            console.error('Save error:', error);
         }
     }
 
+    /**
+     * Load model from files
+     */
     async onLoadFromFiles() {
         try {
-            const jsonFile = this.elements.modelJson.files[0];
-            const weightsFile = this.elements.modelWeights.files[0];
+            const jsonFile = document.getElementById('modelJsonFile').files[0];
+            const weightsFile = document.getElementById('modelWeightsFile').files[0];
             
             if (!jsonFile || !weightsFile) {
                 alert('Please select both model files');
                 return;
             }
-            
+
             this.log('Loading model...');
-            this.model = await tf.loadLayersModel(tf.io.browserFiles([jsonFile, weightsFile]));
-            
-            this.model.compile({
-                optimizer: 'adam',
-                loss: 'meanSquaredError',
-                metrics: ['mse']
-            });
+            this.model = await tf.loadLayersModel(
+                tf.io.browserFiles([jsonFile, weightsFile])
+            );
             
             this.updateModelInfo();
-            this.updateUIState();
-            this.log('✅ Model loaded successfully!');
+            document.getElementById('saveModel').disabled = false;
+            document.getElementById('evaluate').disabled = false;
+            document.getElementById('testFive').disabled = false;
+            
+            this.log('Model loaded successfully!');
             
         } catch (error) {
-            this.log(`❌ Load error: ${error.message}`);
+            this.log(`Model load error: ${error.message}`);
+            console.error('Model load error:', error);
         }
     }
 
+    /**
+     * Update model information display
+     */
     updateModelInfo() {
         if (!this.model) return;
         
         let totalParams = 0;
-        const layersInfo = this.model.layers.map(layer => {
-            const params = layer.countParams();
-            totalParams += params;
-            return `${layer.name}: ${params} params (${layer.getClassName()})`;
-        }).join('<br>');
+        this.model.summary(null, null, (line) => {
+            const match = line.match(/params:\s+([\d,]+)/);
+            if (match) {
+                totalParams += parseInt(match[1].replace(/,/g, ''));
+            }
+        });
         
-        this.elements.modelInfo.innerHTML = `
-            <strong>Denoising Autoencoder</strong><br>
+        document.getElementById('modelInfo').innerHTML = `
             Layers: ${this.model.layers.length}<br>
-            Total parameters: ${totalParams.toLocaleString()}<br>
-            <details><summary>Layer Details</summary><div style="font-size: 12px;">${layersInfo}</div></details>
+            Total parameters: ${totalParams.toLocaleString()}
         `;
     }
 
+    /**
+     * Reset application state
+     */
     onReset() {
+        if (this.isTraining) {
+            alert('Cannot reset during training');
+            return;
+        }
+
+        // Dispose model and data
         if (this.model) {
             this.model.dispose();
             this.model = null;
         }
+        
         this.dataLoader.dispose();
         
-        this.elements.dataStatus.innerHTML = 'No data loaded';
-        this.elements.modelInfo.innerHTML = 'No model loaded';
-        this.elements.trainingLogs.innerHTML = '';
-        this.elements.imagePreview.innerHTML = '';
-        this.elements.predictionResults.innerHTML = '';
-        this.elements.metrics.innerHTML = 'No evaluation performed';
+        // Reset UI
+        document.getElementById('dataStatus').textContent = 'No data loaded';
+        document.getElementById('modelInfo').textContent = 'No model loaded';
+        document.getElementById('metrics').textContent = 'No evaluation performed';
+        document.getElementById('previewContainer').innerHTML = '';
         
-        this.elements.trainFile.value = '';
-        this.elements.testFile.value = '';
-        this.elements.modelJson.value = '';
-        this.elements.modelWeights.value = '';
+        // Reset buttons
+        document.getElementById('train').disabled = true;
+        document.getElementById('evaluate').disabled = true;
+        document.getElementById('testFive').disabled = true;
+        document.getElementById('saveModel').disabled = true;
+        document.getElementById('loadModel').disabled = true;
         
-        this.updateUIState();
+        // Clear file inputs
+        document.getElementById('trainFile').value = '';
+        document.getElementById('testFile').value = '';
+        document.getElementById('modelJsonFile').value = '';
+        document.getElementById('modelWeightsFile').value = '';
+        
         this.log('Application reset');
     }
 
+    /**
+     * Toggle tfjs-vis visor
+     */
     toggleVisor() {
         tfvis.visor().toggle();
     }
+
+    /**
+     * Add message to training logs
+     * @param {string} message - Log message
+     */
+    log(message) {
+        const logs = document.getElementById('trainingLogs');
+        const timestamp = new Date().toLocaleTimeString();
+        const logEntry = document.createElement('div');
+        logEntry.textContent = `[${timestamp}] ${message}`;
+        logs.appendChild(logEntry);
+        logs.scrollTop = logs.scrollHeight;
+    }
 }
 
-// Global reference for button callbacks
+// Initialize application when page loads
 let app;
-
-// Initialize application
 document.addEventListener('DOMContentLoaded', () => {
     app = new MNISTApp();
 });
