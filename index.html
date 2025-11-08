@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MNIST CNN Classifier</title>
+    <title>MNIST CNN Training (Client-Side)</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-vis@latest"></script>
     <style>
@@ -13,7 +13,6 @@
             margin: 20px;
             background-color: #f5f5f5;
         }
-        
         .container {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -21,153 +20,131 @@
             max-width: 1200px;
             margin: 0 auto;
         }
-        
-        .column {
+        .panel {
             background: white;
-            padding: 20px;
+            padding: 15px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        
         .controls {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            grid-column: 1 / -1;
+            display: flex;
+            flex-wrap: wrap;
             gap: 10px;
-            margin: 20px 0;
+            margin-bottom: 20px;
         }
-        
         button {
-            padding: 10px;
+            padding: 8px 16px;
             background: #007cba;
             color: white;
             border: none;
             border-radius: 4px;
             cursor: pointer;
         }
-        
         button:hover {
             background: #005a87;
         }
-        
         button:disabled {
-            background: #ccc;
+            background: #cccccc;
             cursor: not-allowed;
         }
-        
         .file-inputs {
-            display: grid;
+            display: flex;
             gap: 10px;
-            margin: 10px 0;
+            margin-bottom: 15px;
         }
-        
         .preview-container {
             display: flex;
             gap: 10px;
-            margin: 20px 0;
-            flex-wrap: wrap;
+            margin-top: 15px;
         }
-        
         .preview-item {
             text-align: center;
         }
-        
         canvas {
             border: 1px solid #ddd;
             image-rendering: pixelated;
         }
-        
         .correct {
             color: green;
             font-weight: bold;
         }
-        
         .incorrect {
             color: red;
             font-weight: bold;
         }
-        
         .status {
             margin: 10px 0;
             padding: 10px;
-            background: #e7f3ff;
+            background: #f0f0f0;
             border-radius: 4px;
         }
-        
         .logs {
-            background: #f8f8f8;
+            height: 150px;
+            overflow-y: auto;
+            background: #1e1e1e;
+            color: #d4d4d4;
             padding: 10px;
             border-radius: 4px;
-            max-height: 200px;
-            overflow-y: auto;
             font-family: monospace;
             font-size: 12px;
         }
     </style>
 </head>
 <body>
+    <h1>MNIST CNN Training (Client-Side)</h1>
+    
+    <div class="file-inputs">
+        <div>
+            <label>Upload Train CSV</label>
+            <input type="file" id="trainFile" accept=".csv">
+        </div>
+        <div>
+            <label>Upload Test CSV</label>
+            <input type="file" id="testFile" accept=".csv">
+        </div>
+    </div>
+
+    <div class="controls">
+        <button id="loadData">Load Data</button>
+        <button id="train" disabled>Train</button>
+        <button id="evaluate" disabled>Evaluate</button>
+        <button id="testFive" disabled>Test 5 Random</button>
+        <button id="saveModel" disabled>Save Model</button>
+        <button id="reset">Reset</button>
+        <button id="toggleVisor">Toggle Visor</button>
+    </div>
+
+    <div class="file-inputs">
+        <div>
+            <label>Load Model JSON</label>
+            <input type="file" id="modelJson" accept=".json">
+        </div>
+        <div>
+            <label>Load Model Weights</label>
+            <input type="file" id="modelWeights" accept=".bin">
+        </div>
+        <button id="loadModel">Load Model</button>
+    </div>
+
     <div class="container">
-        <div class="column">
-            <h1>MNIST CNN Training (Client-Side)</h1>
+        <div class="panel">
+            <h2>Data Status</h2>
+            <div id="dataStatus" class="status">No data loaded</div>
             
-            <div class="file-inputs">
-                <div>
-                    <label>Upload Train CSV:</label>
-                    <input type="file" id="trainFile" accept=".csv">
-                </div>
-                <div>
-                    <label>Upload Test CSV:</label>
-                    <input type="file" id="testFile" accept=".csv">
-                </div>
-            </div>
+            <h2>Model Info</h2>
+            <div id="modelInfo" class="status">No model loaded</div>
             
-            <div class="controls">
-                <button id="loadData">Load Data</button>
-                <button id="train" disabled>Train</button>
-                <button id="evaluate" disabled>Evaluate</button>
-                <button id="testFive" disabled>Test 5 Random</button>
-                <button id="saveModel" disabled>Save Model</button>
-                <button id="reset">Reset</button>
-                <button id="toggleVisor">Toggle Visor</button>
-            </div>
-            
-            <div class="file-inputs">
-                <div>
-                    <label>Load Model JSON:</label>
-                    <input type="file" id="modelJsonFile" accept=".json">
-                </div>
-                <div>
-                    <label>Load Model Weights:</label>
-                    <input type="file" id="modelWeightsFile" accept=".bin">
-                </div>
-                <button id="loadModel" disabled>Load Model</button>
-            </div>
-            
-            <div class="status">
-                <h3>Data Status</h3>
-                <div id="dataStatus">No data loaded</div>
-            </div>
-            
-            <div class="status">
-                <h3>Model Info</h3>
-                <div id="modelInfo">No model loaded</div>
-            </div>
-            
-            <div class="status">
-                <h3>Training Logs</h3>
-                <div class="logs" id="trainingLogs"></div>
-            </div>
+            <h2>Training Logs</h2>
+            <div id="logs" class="logs"></div>
         </div>
         
-        <div class="column">
-            <h3>Random 5 Preview</h3>
-            <div class="preview-container" id="previewContainer">
-                <!-- Preview canvases will be inserted here -->
-            </div>
+        <div class="panel">
+            <h2>Random 5 Preview</h2>
+            <div id="preview" class="preview-container"></div>
             
-            <div class="status">
-                <h3>Metrics</h3>
-                <div id="metrics">No evaluation performed</div>
-            </div>
+            <h2>Metrics</h2>
+            <div id="metrics" class="status">No metrics available</div>
         </div>
     </div>
 
