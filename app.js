@@ -1,4 +1,4 @@
-// app.js — FINAL (fixes "labels must be a 1D tensor" and keeps evaluation robust)
+// app.js — UPDATED WITH AUTOENCODER DENOISING
 /**
  * MNIST browser-only trainer with:
  * - File-based CSV loading (handled by DataLoader)
@@ -6,20 +6,18 @@
  * - Evaluation: overall accuracy + confusion matrix + per-class accuracy bar chart
  * - Random 5 preview with colored predicted labels
  * - File-based save/load only (downloads:// and browserFiles)
- *
- * Notes on fixes:
- * - Evaluation now builds 1D tensors for labels/preds explicitly (argMax(1)),
- *   converts to typed arrays, then feeds tfvis.metrics.confusionMatrix.
- * - No tfvis.show.perClassAccuracy misuse; we render a bar chart from the CM.
+ * - AUTOENCODER DENOISING: Train denoiser with autoencoder
  */
 
 class MNISTApp {
   constructor() {
     this.data = new DataLoader();
     this.model = null;
+    this.autoencoder = null; // NEW: Autoencoder model for denoising
     this.train = null; // { xs, ys }
     this.test  = null; // { xs, ys }
     this.bestValAcc = 0;
+    this.currentMode = 'classifier'; // 'classifier' or 'autoencoder'
 
     this.$ = (id) => document.getElementById(id);
     this._bindUI();
@@ -35,6 +33,9 @@ class MNISTApp {
     this.$('loadModel').addEventListener('click', () => this.onLoadFromFiles());
     this.$('reset').addEventListener('click', () => this.onReset());
     this.$('toggleVisor').addEventListener('click', () => tfvis.visor().toggle());
+    
+    // NEW: Mode switcher between classifier and autoencoder
+    this.$('switchMode').addEventListener('click', () => this.switchMode());
   }
 
   log(msg) {
@@ -56,6 +57,38 @@ class MNISTApp {
     this.$('evaluate').disabled  = !evalable;
     this.$('testFive').disabled  = !evalable;
     this.$('saveModel').disabled = !haveModel;
+  }
+
+  // NEW: Switch between classifier and autoencoder modes
+  switchMode() {
+    this.currentMode = this.currentMode === 'classifier' ? 'autoencoder' : 'classifier';
+    const modeDisplay = this.$('currentMode');
+    const trainButton = this.$('train');
+    const testButton = this.$('testFive');
+    
+    modeDisplay.textContent = this.currentMode === 'classifier' ? 'Classifier Mode' : 'Autoencoder Denoising Mode';
+    
+    if (this.currentMode === 'autoencoder') {
+      trainButton.textContent = 'Train Autoencoder';
+      testButton.textContent = 'Test Denoising (5 Random)';
+      this.log('Switched to Autoencoder Denoising Mode');
+    } else {
+      trainButton.textContent = 'Train';
+      testButton.textContent = 'Test 5 Random';
+      this.log('Switched to Classifier Mode');
+    }
+    
+    // Reset model when switching modes
+    if (this.model) {
+      this.model.dispose();
+      this.model = null;
+    }
+    if (this.autoencoder) {
+      this.autoencoder.dispose();
+      this.autoencoder = null;
+    }
+    this._setModelInfo('No model - select mode and train');
+    this._setMetrics('Switch between classifier and denoising modes');
   }
 
   async onLoadData() {
@@ -101,50 +134,69 @@ class MNISTApp {
     return m;
   }
 
+  // NEW: Build autoencoder model for denoising
+  _buildAutoencoder() {
+    const model = tf.sequential();
+    
+    // Encoder
+    model.add(tf.layers.conv2d({
+      filters: 32, 
+      kernelSize: 3, 
+      activation: 'relu', 
+      padding: 'same', 
+      inputShape: [28, 28, 1]
+    }));
+    model.add(tf.layers.maxPooling2d({ poolSize: 2, padding: 'same' }));
+    model.add(tf.layers.conv2d({
+      filters: 16, 
+      kernelSize: 3, 
+      activation: 'relu', 
+      padding: 'same'
+    }));
+    
+    // Decoder
+    model.add(tf.layers.conv2d({
+      filters: 16, 
+      kernelSize: 3, 
+      activation: 'relu', 
+      padding: 'same'
+    }));
+    model.add(tf.layers.upSampling2d({ size: 2 }));
+    model.add(tf.layers.conv2d({
+      filters: 32, 
+      kernelSize: 3, 
+      activation: 'relu', 
+      padding: 'same'
+    }));
+    model.add(tf.layers.conv2d({
+      filters: 1, 
+      kernelSize: 3, 
+      activation: 'sigmoid', 
+      padding: 'same'
+    }));
+    
+    model.compile({
+      optimizer: 'adam',
+      loss: 'meanSquaredError',
+      metrics: ['mse']
+    });
+
+    const total = model.countParams();
+    this._setModelInfo(`Autoencoder Layers: <b>${model.layers.length}</b><br/>Total parameters: <b>${total.toLocaleString()}</b>`);
+    console.log('Autoencoder Summary:');
+    console.log(model.summary());
+    return model;
+  }
+
   async onTrain() {
     try {
       if (!this.train) { alert('Load data first.'); return; }
 
-      // Dispose old model if any
-      if (this.model) { this.model.dispose(); this.model = null; }
-      this.model = this._buildModel();
-      this._enable(true, false);
-      this.bestValAcc = 0;
-
-      // Train/val split
-      const { trainXs, trainYs, valXs, valYs } = this.data.splitTrainVal(this.train.xs, this.train.ys, 0.1);
-
-      const surface = { name: 'Fit (loss / accuracy)', tab: 'Training' };
-      const fitCallbacks = tfvis.show.fitCallbacks(surface, ['loss', 'val_loss', 'acc', 'val_acc'], {
-        callbacks: ['onEpochEnd', 'onBatchEnd'],
-      });
-
-      const epochs = 8;
-      const batchSize = 128;
-      this.log(`Training... epochs=${epochs}, batchSize=${batchSize}`);
-      const t0 = performance.now();
-
-      await this.model.fit(trainXs, trainYs, {
-        epochs, batchSize, shuffle: true,
-        validationData: [valXs, valYs],
-        callbacks: {
-          onEpochEnd: async (ep, logs) => {
-            const va = logs?.val_acc ?? logs?.val_accuracy ?? 0;
-            if (va > this.bestValAcc) this.bestValAcc = va;
-            this._setMetrics(`Best Val Accuracy: <b>${(this.bestValAcc*100).toFixed(2)}%</b>`);
-            await fitCallbacks.onEpochEnd?.(ep, logs);
-            await tf.nextFrame();
-          },
-          onBatchEnd: async (b, logs) => { await fitCallbacks.onBatchEnd?.(b, logs); }
-        }
-      });
-
-      const s = ((performance.now() - t0) / 1000).toFixed(2);
-      this.log(`Training finished in ${s}s. Best Val Acc ${(this.bestValAcc*100).toFixed(2)}%.`);
-      this._enable(true, true);
-
-      // Cleanup split tensors
-      trainXs.dispose(); trainYs.dispose(); valXs.dispose(); valYs.dispose();
+      if (this.currentMode === 'classifier') {
+        await this._trainClassifier();
+      } else {
+        await this._trainAutoencoder();
+      }
     } catch (err) {
       console.error(err);
       this.log(`Train error: ${err.message}`);
@@ -152,92 +204,99 @@ class MNISTApp {
     }
   }
 
+  async _trainClassifier() {
+    // Dispose old model if any
+    if (this.model) { this.model.dispose(); this.model = null; }
+    this.model = this._buildModel();
+    this._enable(true, false);
+    this.bestValAcc = 0;
+
+    // Train/val split
+    const { trainXs, trainYs, valXs, valYs } = this.data.splitTrainVal(this.train.xs, this.train.ys, 0.1);
+
+    const surface = { name: 'Classifier Training', tab: 'Training' };
+    const fitCallbacks = tfvis.show.fitCallbacks(surface, ['loss', 'val_loss', 'acc', 'val_acc'], {
+      callbacks: ['onEpochEnd', 'onBatchEnd'],
+    });
+
+    const epochs = 8;
+    const batchSize = 128;
+    this.log(`Training Classifier... epochs=${epochs}, batchSize=${batchSize}`);
+    const t0 = performance.now();
+
+    await this.model.fit(trainXs, trainYs, {
+      epochs, batchSize, shuffle: true,
+      validationData: [valXs, valYs],
+      callbacks: {
+        onEpochEnd: async (ep, logs) => {
+          const va = logs?.val_acc ?? logs?.val_accuracy ?? 0;
+          if (va > this.bestValAcc) this.bestValAcc = va;
+          this._setMetrics(`Best Val Accuracy: <b>${(this.bestValAcc*100).toFixed(2)}%</b>`);
+          await fitCallbacks.onEpochEnd?.(ep, logs);
+          await tf.nextFrame();
+        },
+        onBatchEnd: async (b, logs) => { await fitCallbacks.onBatchEnd?.(b, logs); }
+      }
+    });
+
+    const s = ((performance.now() - t0) / 1000).toFixed(2);
+    this.log(`Classifier training finished in ${s}s. Best Val Acc ${(this.bestValAcc*100).toFixed(2)}%.`);
+    this._enable(true, true);
+
+    // Cleanup split tensors
+    trainXs.dispose(); trainYs.dispose(); valXs.dispose(); valYs.dispose();
+  }
+
+  async _trainAutoencoder() {
+    // Dispose old autoencoder if any
+    if (this.autoencoder) { this.autoencoder.dispose(); this.autoencoder = null; }
+    this.autoencoder = this._buildAutoencoder();
+    this._enable(true, false);
+
+    // For autoencoder, we use images as both input and target
+    // Create noisy inputs and clean targets
+    const noisyTrain = this.data.addNoise(this.train.xs, 0.5);
+    const noisyTest = this.data.addNoise(this.test.xs, 0.5);
+
+    const surface = { name: 'Autoencoder Training', tab: 'Training' };
+    const fitCallbacks = tfvis.show.fitCallbacks(surface, ['loss', 'val_loss'], {
+      callbacks: ['onEpochEnd', 'onBatchEnd'],
+    });
+
+    const epochs = 10;
+    const batchSize = 128;
+    this.log(`Training Autoencoder... epochs=${epochs}, batchSize=${batchSize}`);
+    const t0 = performance.now();
+
+    await this.autoencoder.fit(noisyTrain, this.train.xs, {
+      epochs, batchSize, shuffle: true,
+      validationData: [noisyTest, this.test.xs],
+      callbacks: {
+        onEpochEnd: async (ep, logs) => {
+          this._setMetrics(`Autoencoder Loss: <b>${logs?.loss?.toFixed(4)}</b>, Val Loss: <b>${logs?.val_loss?.toFixed(4)}</b>`);
+          await fitCallbacks.onEpochEnd?.(ep, logs);
+          await tf.nextFrame();
+        },
+        onBatchEnd: async (b, logs) => { await fitCallbacks.onBatchEnd?.(b, logs); }
+      }
+    });
+
+    const s = ((performance.now() - t0) / 1000).toFixed(2);
+    this.log(`Autoencoder training finished in ${s}s.`);
+    this._enable(true, true);
+
+    // Cleanup
+    noisyTrain.dispose();
+    noisyTest.dispose();
+  }
+
   async onEvaluate() {
     try {
-      if (!this.model || !this.test) { alert('Need a trained or loaded model + test data.'); return; }
-
-      this.log('Evaluating on test set...');
-
-      // Overall metrics via model.evaluate
-      const [lossT, accT] = this.model.evaluate(this.test.xs, this.test.ys);
-      const [loss, acc] = [ (await lossT.data())[0], (await accT.data())[0] ];
-      lossT.dispose(); accT.dispose();
-      this._setMetrics(`Test Accuracy: <b>${(acc*100).toFixed(2)}%</b> &nbsp; | &nbsp; Test Loss: <b>${loss.toFixed(4)}</b>`);
-
-      // FIXED: Create proper 1D arrays for confusion matrix
-      let yTrueArr, yPredArr;
-      
-      // Use tf.tidy to automatically clean up intermediate tensors
-      await tf.tidy(async () => {
-        // Get true labels - convert from one-hot to class indices
-        const trueLabelsTensor = this.test.ys.argMax(1); // Shape: [N]
-        yTrueArr = await trueLabelsTensor.array(); // Convert to regular JavaScript array
-        
-        // Get predictions
-        const predictionsTensor = this.model.predict(this.test.xs);
-        const predLabelsTensor = predictionsTensor.argMax(1); // Shape: [N]
-        yPredArr = await predLabelsTensor.array(); // Convert to regular JavaScript array
-        
-        // Explicitly dispose the tensors we created
-        predictionsTensor.dispose();
-      });
-
-      console.log('True labels array:', yTrueArr.slice(0, 10)); // Debug first 10
-      console.log('Pred labels array:', yPredArr.slice(0, 10)); // Debug first 10
-      console.log('True labels type:', typeof yTrueArr[0]);
-      console.log('Pred labels type:', typeof yPredArr[0]);
-
-      // Verify we have proper arrays
-      if (!Array.isArray(yTrueArr) || !Array.isArray(yPredArr)) {
-        throw new Error('Labels are not proper arrays');
+      if (this.currentMode === 'classifier') {
+        await this._evaluateClassifier();
+      } else {
+        await this._evaluateAutoencoder();
       }
-
-      if (yTrueArr.length !== yPredArr.length) {
-        throw new Error('True and prediction arrays have different lengths');
-      }
-
-      // Create confusion matrix
-      this.log('Creating confusion matrix...');
-      const confusionMatrix = await tfvis.metrics.confusionMatrix(yTrueArr, yPredArr);
-      console.log('Confusion matrix:', confusionMatrix);
-
-      const evalSurf = { name: 'Evaluation', tab: 'Evaluation' };
-      
-      // Render confusion matrix
-      await tfvis.render.confusionMatrix(
-        evalSurf, 
-        { 
-          values: confusionMatrix, 
-          tickLabels: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] 
-        },
-        { 
-          width: 400, 
-          height: 400 
-        }
-      );
-
-      // Calculate and render per-class accuracy
-      const perClassAccuracy = [];
-      for (let i = 0; i < 10; i++) {
-        const total = confusionMatrix[i].reduce((sum, val) => sum + val, 0);
-        const correct = confusionMatrix[i][i];
-        const accuracy = total > 0 ? correct / total : 0;
-        perClassAccuracy.push({ x: i.toString(), y: accuracy });
-      }
-
-      await tfvis.render.barchart(
-        { name: 'Per-class Accuracy', tab: 'Evaluation' },
-        perClassAccuracy,
-        { 
-          xLabel: 'Digit', 
-          yLabel: 'Accuracy',
-          yAxisDomain: [0, 1],
-          height: 300
-        }
-      );
-
-      await tf.nextFrame();
-      this.log('Evaluation complete. See Visor for charts.');
     } catch (err) {
       console.error('Detailed eval error:', err);
       this.log(`Eval error: ${err.message}`);
@@ -245,41 +304,106 @@ class MNISTApp {
     }
   }
 
+  async _evaluateClassifier() {
+    if (!this.model || !this.test) { alert('Need a trained classifier + test data.'); return; }
+
+    this.log('Evaluating classifier on test set...');
+
+    // Overall metrics via model.evaluate
+    const [lossT, accT] = this.model.evaluate(this.test.xs, this.test.ys);
+    const [loss, acc] = [ (await lossT.data())[0], (await accT.data())[0] ];
+    lossT.dispose(); accT.dispose();
+    this._setMetrics(`Test Accuracy: <b>${(acc*100).toFixed(2)}%</b> &nbsp; | &nbsp; Test Loss: <b>${loss.toFixed(4)}</b>`);
+
+    // Create proper 1D arrays for confusion matrix
+    let yTrueArr, yPredArr;
+    
+    await tf.tidy(async () => {
+      const trueLabelsTensor = this.test.ys.argMax(1);
+      yTrueArr = await trueLabelsTensor.array();
+      
+      const predictionsTensor = this.model.predict(this.test.xs);
+      const predLabelsTensor = predictionsTensor.argMax(1);
+      yPredArr = await predLabelsTensor.array();
+      
+      predictionsTensor.dispose();
+    });
+
+    // Create confusion matrix
+    const confusionMatrix = await tfvis.metrics.confusionMatrix(yTrueArr, yPredArr);
+
+    const evalSurf = { name: 'Classifier Evaluation', tab: 'Evaluation' };
+    
+    // Render confusion matrix
+    await tfvis.render.confusionMatrix(
+      evalSurf, 
+      { 
+        values: confusionMatrix, 
+        tickLabels: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] 
+      },
+      { 
+        width: 400, 
+        height: 400 
+      }
+    );
+
+    // Calculate and render per-class accuracy
+    const perClassAccuracy = [];
+    for (let i = 0; i < 10; i++) {
+      const total = confusionMatrix[i].reduce((sum, val) => sum + val, 0);
+      const correct = confusionMatrix[i][i];
+      const accuracy = total > 0 ? correct / total : 0;
+      perClassAccuracy.push({ x: i.toString(), y: accuracy });
+    }
+
+    await tfvis.render.barchart(
+      { name: 'Per-class Accuracy', tab: 'Evaluation' },
+      perClassAccuracy,
+      { 
+        xLabel: 'Digit', 
+        yLabel: 'Accuracy',
+        yAxisDomain: [0, 1],
+        height: 300
+      }
+    );
+
+    await tf.nextFrame();
+    this.log('Classifier evaluation complete. See Visor for charts.');
+  }
+
+  async _evaluateAutoencoder() {
+    if (!this.autoencoder || !this.test) { alert('Need a trained autoencoder + test data.'); return; }
+
+    this.log('Evaluating autoencoder denoising...');
+
+    // Create noisy test data
+    const noisyTest = this.data.addNoise(this.test.xs, 0.5);
+    
+    // Get denoised predictions
+    const denoised = this.autoencoder.predict(noisyTest);
+    
+    // Calculate MSE between original and denoised
+    const mse = tf.metrics.meanSquaredError(this.test.xs, denoised);
+    const mseValue = (await mse.data())[0];
+    
+    this._setMetrics(`Denoising MSE: <b>${mseValue.toFixed(6)}</b>`);
+    
+    // Show sample comparisons
+    this.log(`Autoencoder evaluation complete. MSE: ${mseValue.toFixed(6)}`);
+    
+    // Cleanup
+    noisyTest.dispose();
+    denoised.dispose();
+    mse.dispose();
+  }
+
   async onTestFive() {
     try {
-      if (!this.model || !this.test) { alert('Need a trained or loaded model + test data.'); return; }
-
-      const batch = this.data.getRandomTestBatch(this.test.xs, this.test.ys, 5);
-      const pred = this.model.predict(batch.xs);
-      const predLabels = Array.from(await pred.argMax(-1).data());
-      const trueLabels = Array.from(await batch.ys.argMax(-1).data());
-
-      const row = this.$('preview');
-      row.innerHTML = '';
-
-      for (let i = 0; i < 5; i++) {
-        const wrap = document.createElement('div');
-        wrap.className = 'pitem';
-
-        const c = document.createElement('canvas');
-        c.className = 'preview';
-        const img = tf.tidy(() => batch.xs.slice([i,0,0,0],[1,28,28,1]));
-        this.data.draw28x28ToCanvas(img, c, 4);
-        img.dispose();
-
-        const ok = predLabels[i] === trueLabels[i];
-        const lab = document.createElement('div');
-        lab.innerHTML = `Pred: <b>${predLabels[i]}</b> &nbsp;|&nbsp; True: <b>${trueLabels[i]}</b>`;
-        lab.className = ok ? 'ok' : 'bad';
-
-        wrap.appendChild(c);
-        wrap.appendChild(lab);
-        row.appendChild(wrap);
+      if (this.currentMode === 'classifier') {
+        await this._testFiveClassifier();
+      } else {
+        await this._testFiveDenoising();
       }
-
-      pred.dispose(); batch.xs.dispose(); batch.ys.dispose();
-      await tf.nextFrame();
-      this.log('Rendered 5 random test predictions.');
     } catch (err) {
       console.error(err);
       this.log(`Preview error: ${err.message}`);
@@ -287,11 +411,110 @@ class MNISTApp {
     }
   }
 
+  async _testFiveClassifier() {
+    if (!this.model || !this.test) { alert('Need a trained classifier + test data.'); return; }
+
+    const batch = this.data.getRandomTestBatch(this.test.xs, this.test.ys, 5);
+    const pred = this.model.predict(batch.xs);
+    const predLabels = Array.from(await pred.argMax(-1).data());
+    const trueLabels = Array.from(await batch.ys.argMax(-1).data());
+
+    const row = this.$('preview');
+    row.innerHTML = '';
+
+    for (let i = 0; i < 5; i++) {
+      const wrap = document.createElement('div');
+      wrap.className = 'pitem';
+
+      const c = document.createElement('canvas');
+      c.className = 'preview';
+      const img = tf.tidy(() => batch.xs.slice([i,0,0,0],[1,28,28,1]));
+      this.data.draw28x28ToCanvas(img, c, 4);
+      img.dispose();
+
+      const ok = predLabels[i] === trueLabels[i];
+      const lab = document.createElement('div');
+      lab.innerHTML = `Pred: <b>${predLabels[i]}</b> &nbsp;|&nbsp; True: <b>${trueLabels[i]}</b>`;
+      lab.className = ok ? 'ok' : 'bad';
+
+      wrap.appendChild(c);
+      wrap.appendChild(lab);
+      row.appendChild(wrap);
+    }
+
+    pred.dispose(); batch.xs.dispose(); batch.ys.dispose();
+    await tf.nextFrame();
+    this.log('Rendered 5 random test predictions.');
+  }
+
+  async _testFiveDenoising() {
+    if (!this.autoencoder || !this.test) { alert('Need a trained autoencoder + test data.'); return; }
+
+    // Get batch with original, noisy, and will generate denoised
+    const batch = this.data.getRandomDenoisingBatch(this.test.xs, this.test.ys, 5, 0.5);
+    const denoised = this.autoencoder.predict(batch.noisy);
+    const trueLabels = Array.from(await batch.ys.argMax(-1).data());
+
+    const row = this.$('preview');
+    row.innerHTML = '<div style="grid-column: 1 / -1; text-align: center; margin-bottom: 10px; color: var(--muted);">Original | Noisy Input | Denoised Output</div>';
+
+    for (let i = 0; i < 5; i++) {
+      const wrap = document.createElement('div');
+      wrap.className = 'pitem';
+
+      // Original image
+      const origCanvas = document.createElement('canvas');
+      origCanvas.className = 'preview';
+      const origImg = tf.tidy(() => batch.original.slice([i,0,0,0],[1,28,28,1]));
+      this.data.draw28x28ToCanvas(origImg, origCanvas, 4);
+      origImg.dispose();
+
+      // Noisy image
+      const noisyCanvas = document.createElement('canvas');
+      noisyCanvas.className = 'preview';
+      const noisyImg = tf.tidy(() => batch.noisy.slice([i,0,0,0],[1,28,28,1]));
+      this.data.draw28x28ToCanvas(noisyImg, noisyCanvas, 4);
+      noisyImg.dispose();
+
+      // Denoised image
+      const denoisedCanvas = document.createElement('canvas');
+      denoisedCanvas.className = 'preview';
+      const denoisedImg = tf.tidy(() => denoised.slice([i,0,0,0],[1,28,28,1]));
+      this.data.draw28x28ToCanvas(denoisedImg, denoisedCanvas, 4);
+      denoisedImg.dispose();
+
+      const lab = document.createElement('div');
+      lab.innerHTML = `True: <b>${trueLabels[i]}</b>`;
+      lab.className = 'ok';
+
+      wrap.appendChild(origCanvas);
+      wrap.appendChild(noisyCanvas);
+      wrap.appendChild(denoisedCanvas);
+      wrap.appendChild(lab);
+      row.appendChild(wrap);
+    }
+
+    denoised.dispose(); batch.original.dispose(); batch.noisy.dispose(); batch.ys.dispose();
+    await tf.nextFrame();
+    this.log('Rendered 5 random denoising examples.');
+  }
+
   async onSaveDownload() {
     try {
-      if (!this.model) { alert('No model to save. Train or load one first.'); return; }
-      await this.model.save('downloads://mnist-cnn');
-      this.log('Model saved (model.json + weights.bin).');
+      if (this.currentMode === 'classifier' && !this.model) { 
+        alert('No classifier model to save. Train or load one first.'); 
+        return; 
+      }
+      if (this.currentMode === 'autoencoder' && !this.autoencoder) { 
+        alert('No autoencoder model to save. Train or load one first.'); 
+        return; 
+      }
+
+      const modelToSave = this.currentMode === 'classifier' ? this.model : this.autoencoder;
+      const prefix = this.currentMode === 'classifier' ? 'mnist-cnn' : 'mnist-autoencoder';
+      
+      await modelToSave.save(`downloads://${prefix}`);
+      this.log(`Model saved (${prefix}.json + ${prefix}.weights.bin).`);
     } catch (err) {
       console.error(err);
       this.log(`Save error: ${err.message}`);
@@ -308,13 +531,19 @@ class MNISTApp {
       this.log('Loading model from files...');
       const loaded = await tf.loadLayersModel(tf.io.browserFiles([json, bin]));
 
-      if (this.model) this.model.dispose();
-      this.model = loaded;
+      if (this.currentMode === 'classifier') {
+        if (this.model) this.model.dispose();
+        this.model = loaded;
+      } else {
+        if (this.autoencoder) this.autoencoder.dispose();
+        this.autoencoder = loaded;
+      }
 
-      const total = this.model.countParams();
-      this._setModelInfo(`Loaded model ✓<br/>Layers: <b>${this.model.layers.length}</b><br/>Total parameters: <b>${total.toLocaleString()}</b>`);
+      const total = loaded.countParams();
+      const modelType = this.currentMode === 'classifier' ? 'Classifier' : 'Autoencoder';
+      this._setModelInfo(`Loaded ${modelType} model ✓<br/>Layers: <b>${loaded.layers.length}</b><br/>Total parameters: <b>${total.toLocaleString()}</b>`);
       this._enable(!!this.test, true);
-      this.log('Model loaded. You can Evaluate, Test 5 Random, or Save.');
+      this.log(`${modelType} model loaded. You can Evaluate, Test 5 Random, or Save.`);
     } catch (err) {
       console.error(err);
       this.log(`Load model error: ${err.message}`);
@@ -325,6 +554,7 @@ class MNISTApp {
   onReset() {
     try {
       if (this.model) { this.model.dispose(); this.model = null; }
+      if (this.autoencoder) { this.autoencoder.dispose(); this.autoencoder = null; }
       if (this.train) { this.train.xs.dispose(); this.train.ys.dispose(); this.train = null; }
       if (this.test)  { this.test.xs.dispose();  this.test.ys.dispose();  this.test  = null; }
       this.data.dispose();
@@ -343,4 +573,4 @@ class MNISTApp {
 }
 
 // Boot
-window.addEventListener('DOMContentLoaded', () => { window.mnistApp = new MNISTApp(); });
+window.addEventListener('DOMContentLoaded', () => { window.mnistApp = new
