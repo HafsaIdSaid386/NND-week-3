@@ -1,4 +1,4 @@
-// data-loader.js - SIMPLIFIED WORKING VERSION
+// data-loader.js - FIXED VERSION
 class DataLoader {
     constructor() {
         this.trainData = null;
@@ -67,43 +67,49 @@ class DataLoader {
     }
 
     splitTrainVal(xs, ys, valRatio = 0.1) {
-        const numSamples = xs.shape[0];
-        const numVal = Math.floor(numSamples * valRatio);
-        const indices = tf.util.createShuffledIndices(numSamples);
-        
-        const trainIndices = indices.slice(numVal);
-        const valIndices = indices.slice(0, numVal);
-        
-        const trainXs = tf.gather(xs, trainIndices);
-        const trainYs = tf.gather(ys, trainIndices);
-        const valXs = tf.gather(xs, valIndices);
-        const valYs = tf.gather(ys, valIndices);
-        
-        return { trainXs, trainYs, valXs, valYs };
+        return tf.tidy(() => {
+            const numSamples = xs.shape[0];
+            const numVal = Math.floor(numSamples * valRatio);
+            const indices = Array.from(tf.util.createShuffledIndices(numSamples)); // FIX: Convert to Array
+            
+            const trainIndices = indices.slice(numVal);
+            const valIndices = indices.slice(0, numVal);
+            
+            const trainXs = tf.gather(xs, trainIndices);
+            const trainYs = tf.gather(ys, trainIndices);
+            const valXs = tf.gather(xs, valIndices);
+            const valYs = tf.gather(ys, valIndices);
+            
+            return { trainXs, trainYs, valXs, valYs };
+        });
     }
 
     getRandomTestBatch(xs, ys, k = 5) {
-        const numSamples = xs.shape[0];
-        const indices = [];
-        for (let i = 0; i < k; i++) {
-            indices.push(Math.floor(Math.random() * numSamples));
-        }
-        return {
-            xs: tf.gather(xs, indices),
-            ys: tf.gather(ys, indices),
-            indices
-        };
+        return tf.tidy(() => {
+            const numSamples = xs.shape[0];
+            const indices = [];
+            for (let i = 0; i < k; i++) {
+                indices.push(Math.floor(Math.random() * numSamples));
+            }
+            return {
+                xs: tf.gather(xs, indices),
+                ys: tf.gather(ys, indices),
+                indices
+            };
+        });
     }
 
     getRandomDenoisingBatch(xs, k = 5) {
-        const numSamples = xs.shape[0];
-        const indices = [];
-        for (let i = 0; i < k; i++) {
-            indices.push(Math.floor(Math.random() * numSamples));
-        }
-        const original = tf.gather(xs, indices);
-        const noisy = this.addNoise(original, 0.5);
-        return { original, noisy, indices };
+        return tf.tidy(() => {
+            const numSamples = xs.shape[0];
+            const indices = [];
+            for (let i = 0; i < k; i++) {
+                indices.push(Math.floor(Math.random() * numSamples));
+            }
+            const original = tf.gather(xs, indices);
+            const noisy = this.addNoise(original, 0.5);
+            return { original, noisy, indices };
+        });
     }
 
     draw28x28ToCanvas(tensor, canvas, scale = 4) {
