@@ -1,4 +1,4 @@
-// app.js - FIXED VERSION (fixes "labels must be a 1D tensor" error)
+// app.js — FINAL (fixes "labels must be a 1D tensor" and keeps evaluation robust)
 /**
  * MNIST browser-only trainer with:
  * - File-based CSV loading (handled by DataLoader)
@@ -6,6 +6,11 @@
  * - Evaluation: overall accuracy + confusion matrix + per-class accuracy bar chart
  * - Random 5 preview with colored predicted labels
  * - File-based save/load only (downloads:// and browserFiles)
+ *
+ * Notes on fixes:
+ * - Evaluation now builds 1D tensors for labels/preds explicitly (argMax(1)),
+ *   converts to typed arrays, then feeds tfvis.metrics.confusionMatrix.
+ * - No tfvis.show.perClassAccuracy misuse; we render a bar chart from the CM.
  */
 
 class MNISTApp {
@@ -159,25 +164,43 @@ class MNISTApp {
       lossT.dispose(); accT.dispose();
       this._setMetrics(`Test Accuracy: <b>${(acc*100).toFixed(2)}%</b> &nbsp; | &nbsp; Test Loss: <b>${loss.toFixed(4)}</b>`);
 
-      // FIXED: Create proper 1D tensors for confusion matrix
-      const [yTrue1D, yPred1D] = tf.tidy(() => {
-        // Convert one-hot encoded labels back to class indices
-        const trueLabels = this.test.ys.argMax(1); // Shape: [N]
-        const predictions = this.model.predict(this.test.xs);
-        const predLabels = predictions.argMax(1); // Shape: [N]
-        predictions.dispose();
-        return [trueLabels, predLabels];
+      // FIXED: Create proper 1D arrays for confusion matrix
+      let yTrueArr, yPredArr;
+      
+      // Use tf.tidy to automatically clean up intermediate tensors
+      await tf.tidy(async () => {
+        // Get true labels - convert from one-hot to class indices
+        const trueLabelsTensor = this.test.ys.argMax(1); // Shape: [N]
+        yTrueArr = await trueLabelsTensor.array(); // Convert to regular JavaScript array
+        
+        // Get predictions
+        const predictionsTensor = this.model.predict(this.test.xs);
+        const predLabelsTensor = predictionsTensor.argMax(1); // Shape: [N]
+        yPredArr = await predLabelsTensor.array(); // Convert to regular JavaScript array
+        
+        // Explicitly dispose the tensors we created
+        predictionsTensor.dispose();
       });
 
-      // Convert to regular arrays for tfjs-vis
-      const [yTrueArr, yPredArr] = await Promise.all([
-        yTrue1D.array(),
-        yPred1D.array()
-      ]);
+      console.log('True labels array:', yTrueArr.slice(0, 10)); // Debug first 10
+      console.log('Pred labels array:', yPredArr.slice(0, 10)); // Debug first 10
+      console.log('True labels type:', typeof yTrueArr[0]);
+      console.log('Pred labels type:', typeof yPredArr[0]);
+
+      // Verify we have proper arrays
+      if (!Array.isArray(yTrueArr) || !Array.isArray(yPredArr)) {
+        throw new Error('Labels are not proper arrays');
+      }
+
+      if (yTrueArr.length !== yPredArr.length) {
+        throw new Error('True and prediction arrays have different lengths');
+      }
 
       // Create confusion matrix
+      this.log('Creating confusion matrix...');
       const confusionMatrix = await tfvis.metrics.confusionMatrix(yTrueArr, yPredArr);
-      
+      console.log('Confusion matrix:', confusionMatrix);
+
       const evalSurf = { name: 'Evaluation', tab: 'Evaluation' };
       
       // Render confusion matrix
@@ -213,16 +236,12 @@ class MNISTApp {
         }
       );
 
-      // Cleanup
-      yTrue1D.dispose();
-      yPred1D.dispose();
-      
       await tf.nextFrame();
       this.log('Evaluation complete. See Visor for charts.');
     } catch (err) {
-      console.error(err);
+      console.error('Detailed eval error:', err);
       this.log(`Eval error: ${err.message}`);
-      alert(`Eval error: ${err.message}`);
+      alert(`Eval error: ${err.message}. Check console for details.`);
     }
   }
 
