@@ -1,13 +1,5 @@
-// data-loader.js
-/**
- * Data loading + utilities for MNIST CSV.
- * Requirements satisfied:
- * - Pure browser File APIs (no network).
- * - CSV rows: label, 784 pixel ints (0–255), no header.
- * - Normalize to [0,1], reshape to [N,28,28,1], one-hot labels depth 10.
- * - Robust parsing (handles CRLF, stray spaces, trailing commas).
- * - Memory-safe with tf.tidy and explicit dispose helpers.
- */
+// data-loader.js (إصـلاح: parser متسامح مع header و delimiters مختلفة)
+// كيدعم: CSV بلا شبكة، label + 784 pixels، normalizing، reshape [N,28,28,1]، one-hot labels.
 
 class DataLoader {
   constructor() {
@@ -15,7 +7,7 @@ class DataLoader {
     this._test  = null; // { xs, ys }
   }
 
-  /** Public: parse + process train CSV -> tensors */
+  // تحميل Train من ملف
   async loadTrainFromFiles(file) {
     const rows = await this._parseCsvFile(file);
     const out  = this._rowsToTensors(rows);
@@ -24,7 +16,7 @@ class DataLoader {
     return out;
   }
 
-  /** Public: parse + process test CSV -> tensors */
+  // تحميل Test من ملف
   async loadTestFromFiles(file) {
     const rows = await this._parseCsvFile(file);
     const out  = this._rowsToTensors(rows);
@@ -34,40 +26,59 @@ class DataLoader {
   }
 
   /**
-   * CSV parsing with resiliency.
-   * - Uses FileReader.readAsText (OK for MNIST sizes).
-   * - Splits by /\r?\n/.
-   * - Trims and ignores blank lines.
-   * - Fixes common "comma escape" issues:
-   *   * trailing commas => extra empty value removed
-   *   * accidental spaces => trimmed
-   *   * CR chars on last token => stripped
-   * - Validates 785 columns (1 + 784).
+   * Parser متسامح:
+   * - كيتعرف تلقائياً على الـ delimiter: ',' أو ';' أو tab
+   * - كيسكيپّي header إلا لقا أول قيمة ماشي رقم
+   * - إلى كانت السطر فيه أكثر من 785 قيمة كياخد غير الأولين (label + 784)
+   * - كيحيد القيم الفارغة فالأخير (trailing delimiter)
+   * - كيسجّل إحصائيات مفيدة فحالة ما لقى حتى سطر صالح
    */
   _parseCsvFile(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onerror = () => reject(new Error('File read failed.'));
-      reader.onload  = () => {
+      reader.onload = () => {
         try {
           const text = typeof reader.result === 'string'
             ? reader.result
             : new TextDecoder('utf-8').decode(reader.result);
 
           const lines = text.split(/\r?\n/).filter(l => l.trim().length);
-          const rows = [];
-          for (let line of lines) {
-            // Normalize commas/spaces and remove trailing comma if present.
-            // Example issue: "5,0,0,...,0," -> trailing empty token.
-            let parts = line.split(',').map(s => s.replace(/\r/g,'').trim());
-            if (parts.length && parts[parts.length - 1] === '') parts.pop();
+          if (!lines.length) throw new Error('Empty file.');
 
-            if (parts.length !== 785) continue; // skip malformed rows safely
+          // نختارو سطر عينة باش نكتاشفو delimiter
+          const sample = lines.find(l => l.trim().length) || '';
+          const cntComma = (sample.match(/,/g)  || []).length;
+          const cntSemi  = (sample.match(/;/g)  || []).length;
+          const cntTab   = (sample.match(/\t/g) || []).length;
+          let delim = ',';
+          if (cntSemi > cntComma && cntSemi >= cntTab) delim = ';';
+          if (cntTab  > cntComma && cntTab  >  cntSemi) delim = '\t';
+
+          const rows = [];
+          let skippedHeader = false;
+          let badLen = 0, badLabel = 0;
+
+          for (let idx = 0; idx < lines.length; idx++) {
+            let parts = lines[idx].split(delim).map(s => s.replace(/\r/g,'').trim());
+            // إزالة قيمة فارغة فالأخير إلا كانت فاصلة/سيمي كولون زائدة
+            if (parts.length && parts[parts.length - 1] === '') parts.pop();
+            if (!parts.length) continue;
+
+            // سكيپّي header: إلا أول قيمة ماشي رقم صحيح
+            if (!/^-?\d+$/.test(parts[0])) {
+              if (!skippedHeader) { skippedHeader = true; continue; }
+              badLabel++;
+              continue;
+            }
+
+            // خاص 785 قيمة على الأقل
+            if (parts.length < 785) { badLen++; continue; }
+            if (parts.length > 785) parts = parts.slice(0, 785);
 
             const label = parseInt(parts[0], 10);
-            if (!(label >= 0 && label <= 9)) continue;
+            if (!(label >= 0 && label <= 9)) { badLabel++; continue; }
 
-            // Fast path: convert pixels in place to numbers.
             const px = new Array(784);
             for (let i = 0; i < 784; i++) {
               const v = parseFloat(parts[i + 1]);
@@ -75,55 +86,49 @@ class DataLoader {
             }
             rows.push({ label, pixels: px });
           }
-          if (rows.length === 0) throw new Error('No valid rows found. Check CSV format.');
+
+          if (rows.length === 0) {
+            const hint = `No valid rows. headerSkipped:${skippedHeader}, badLen:${badLen}, badLabel:${badLabel}. `
+              + `تأكّد: header محيّد، delimiter هو "${delim}", وكل سطر فيه 785 قيمة.`;
+            throw new Error(hint);
+          }
           resolve(rows);
         } catch (err) {
           reject(err);
         }
       };
-      // readAsText is fine for <= a few tens of MB (MNIST CSV ~ 120MB worst).
-      // If needed, switch to slice/streaming; kept simple here per instructions.
+      // MNIST CSV كيخدم مزيان بـ readAsText. إلى كان الملف ضخم بزاف ممكن نديرو streaming مستقبلاً.
       reader.readAsText(file);
     });
   }
 
-  /**
-   * Convert parsed rows -> {xs, ys} tensors.
-   * xs: [N,28,28,1] float32 in [0,1]
-   * ys: [N,10] one-hot
-   */
+  // تحويل rows -> Tensors: xs [N,28,28,1] normalized, ys one-hot [N,10]
   _rowsToTensors(rows) {
     return tf.tidy(() => {
       const n = rows.length;
       const buf = new Float32Array(n * 28 * 28);
       const labels = new Int32Array(n);
 
-      let offset = 0;
+      let off = 0;
       for (let i = 0; i < n; i++) {
         labels[i] = rows[i].label;
         const p = rows[i].pixels;
-        for (let j = 0; j < 784; j++) buf[offset++] = p[j] / 255; // normalize
+        for (let j = 0; j < 784; j++) buf[off++] = p[j] / 255;
       }
-
       const xs = tf.tensor4d(buf, [n, 28, 28, 1], 'float32');
       const ys = tf.oneHot(tf.tensor1d(labels, 'int32'), 10).toFloat();
       return { xs, ys };
     });
   }
 
-  /**
-   * Split tensors into train/val by ratio with random shuffle.
-   * Returns fresh tensors; caller owns disposal.
-   */
+  // تقسيم Train/Val بنسبة valRatio (افتراضياً 0.1)
   splitTrainVal(xs, ys, valRatio = 0.1) {
     return tf.tidy(() => {
       const n = xs.shape[0];
       const nVal = Math.max(1, Math.floor(n * valRatio));
       const idx = tf.util.createShuffledIndices(n);
-
       const valIdx = idx.slice(0, nVal);
       const trnIdx = idx.slice(nVal);
-
       const valXs = tf.gather(xs, valIdx);
       const valYs = tf.gather(ys, valIdx);
       const trainXs = tf.gather(xs, trnIdx);
@@ -132,10 +137,7 @@ class DataLoader {
     });
   }
 
-  /**
-   * Get random batch (k) from test set (or given xs/ys).
-   * Returns tensors that the caller should dispose.
-   */
+  // Batch عشوائي من test (افتراضياً 5) لعرض ال-preview
   getRandomTestBatch(xs, ys, k = 5) {
     return tf.tidy(() => {
       const n = xs.shape[0];
@@ -145,26 +147,21 @@ class DataLoader {
     });
   }
 
-  /**
-   * Draw a single 28x28 grayscale tensor into a canvas with nearest-neighbor scaling.
-   * Accepts shapes [28,28], [1,28,28,1], or [28,28,1].
-   */
+  // رسم صورة 28x28 فـ canvas بسكيل nearest-neighbor
   draw28x28ToCanvas(t, canvas, scale = 4) {
     tf.tidy(() => {
       let img = t;
-      if (img.rank === 4) img = img.squeeze([0, 3]); // [1,28,28,1] -> [28,28]
-      if (img.rank === 3) img = img.squeeze();       // [28,28,1] -> [28,28]
+      if (img.rank === 4) img = img.squeeze([0, 3]);
+      if (img.rank === 3) img = img.squeeze();
 
-      // denormalize to 0..255
       const u8 = img.mul(255).clipByValue(0,255).toInt().dataSync();
 
       const small = document.createElement('canvas');
       small.width = 28; small.height = 28;
-      const ictx = small.getContext('2d', { willReadFrequently: false });
+      const ictx = small.getContext('2d');
       const id = ictx.createImageData(28, 28);
       for (let i = 0; i < 784; i++) {
-        const v = u8[i];
-        const o = i * 4;
+        const v = u8[i], o = i * 4;
         id.data[o] = v; id.data[o+1] = v; id.data[o+2] = v; id.data[o+3] = 255;
       }
       ictx.putImageData(id, 0, 0);
@@ -176,7 +173,7 @@ class DataLoader {
     });
   }
 
-  /** Dispose any stored train/test tensors to avoid leaks. */
+  // تنظيف الميموري
   dispose() {
     if (this._train) { this._train.xs.dispose(); this._train.ys.dispose(); this._train = null; }
     if (this._test)  { this._test.xs.dispose();  this._test.ys.dispose();  this._test  = null; }
