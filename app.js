@@ -1,4 +1,4 @@
-// app.js - SIMPLIFIED WORKING VERSION
+// app.js - FIXED VERSION
 class MNISTApp {
     constructor() {
         this.data = new DataLoader();
@@ -118,7 +118,7 @@ class MNISTApp {
             filters: 16, kernelSize: 3, activation: 'relu', padding: 'same'
         }));
         
-        // Decoder
+        // Decoder - FIXED: Ensure output shape matches input
         model.add(tf.layers.conv2d({
             filters: 16, kernelSize: 3, activation: 'relu', padding: 'same'
         }));
@@ -127,7 +127,7 @@ class MNISTApp {
             filters: 32, kernelSize: 3, activation: 'relu', padding: 'same'
         }));
         model.add(tf.layers.conv2d({
-            filters: 1, kernelSize: 3, activation: 'sigmoid', padding: 'same'
+            filters: 1, kernelSize: 3, activation: 'sigmoid', padding: 'same'  // Output same as input
         }));
 
         model.compile({
@@ -152,6 +152,7 @@ class MNISTApp {
             }
         } catch (error) {
             this.log(`Training error: ${error.message}`);
+            console.error('Training error details:', error);
         }
     }
 
@@ -179,35 +180,60 @@ class MNISTApp {
         document.getElementById('testFive').disabled = false;
         document.getElementById('saveModel').disabled = false;
         this.log('Classifier training completed!');
+
+        // Cleanup
+        trainXs.dispose();
+        trainYs.dispose();
+        valXs.dispose();
+        valYs.dispose();
     }
 
     async trainAutoencoder() {
         if (this.autoencoder) this.autoencoder.dispose();
         this.autoencoder = this.createAutoencoder();
 
-        // Create noisy data for training
-        const noisyTrain = this.data.addNoise(this.trainData.xs);
-        const noisyTest = this.data.addNoise(this.testData.xs);
+        // Use smaller batch for training to avoid memory issues
+        const batchSize = 64;
+        const epochs = 10;
 
         this.log('Training autoencoder for denoising...');
         
-        await this.autoencoder.fit(noisyTrain, this.trainData.xs, {
-            epochs: 10,
-            batchSize: 128,
-            validationData: [noisyTest, this.testData.xs],
-            callbacks: tfvis.show.fitCallbacks(
-                { name: 'Autoencoder Training', tab: 'Training' },
-                ['loss', 'val_loss']
-            )
-        });
+        // Train with smaller batches
+        for (let epoch = 0; epoch < epochs; epoch++) {
+            let epochLoss = 0;
+            const numBatches = Math.ceil(this.trainData.xs.shape[0] / batchSize);
+            
+            for (let i = 0; i < numBatches; i++) {
+                const start = i * batchSize;
+                const end = Math.min(start + batchSize, this.trainData.xs.shape[0]);
+                
+                const batchXs = this.trainData.xs.slice([start, 0, 0, 0], [end - start, 28, 28, 1]);
+                const noisyBatch = this.data.addNoise(batchXs, 0.5);
+                
+                const history = await this.autoencoder.fit(noisyBatch, batchXs, {
+                    epochs: 1,
+                    batchSize: Math.min(32, end - start),
+                    verbose: 0
+                });
+                
+                epochLoss += history.history.loss[0];
+                
+                // Cleanup
+                batchXs.dispose();
+                noisyBatch.dispose();
+                
+                // Allow UI updates
+                await tf.nextFrame();
+            }
+            
+            const avgLoss = epochLoss / numBatches;
+            this.log(`Epoch ${epoch + 1}/${epochs} - Loss: ${avgLoss.toFixed(4)}`);
+        }
 
         document.getElementById('evaluate').disabled = false;
         document.getElementById('testFive').disabled = false;
         document.getElementById('saveModel').disabled = false;
         this.log('Autoencoder training completed!');
-        
-        noisyTrain.dispose();
-        noisyTest.dispose();
     }
 
     async evaluate() {
@@ -252,19 +278,35 @@ class MNISTApp {
             return;
         }
 
-        const noisyTest = this.data.addNoise(this.testData.xs);
-        const denoised = this.autoencoder.predict(noisyTest);
-        const mse = tf.losses.meanSquaredError(this.testData.xs, denoised);
-        const mseValue = (await mse.data())[0];
-        
-        document.getElementById('metrics').innerHTML = 
-            `Denoising MSE: <b>${mseValue.toFixed(6)}</b>`;
-        
-        this.log(`Autoencoder evaluation: MSE = ${mseValue.toFixed(6)}`);
-        
-        noisyTest.dispose();
-        denoised.dispose();
-        mse.dispose();
+        // Use smaller batch for evaluation
+        const batchSize = 100;
+        let totalMSE = 0;
+        let numBatches = 0;
+
+        for (let i = 0; i < this.testData.xs.shape[0]; i += batchSize) {
+            const end = Math.min(i + batchSize, this.testData.xs.shape[0]);
+            const batchSizeActual = end - i;
+            
+            const batchXs = this.testData.xs.slice([i, 0, 0, 0], [batchSizeActual, 28, 28, 1]);
+            const noisyBatch = this.data.addNoise(batchXs, 0.5);
+            const denoised = this.autoencoder.predict(noisyBatch);
+            
+            const mse = tf.losses.meanSquaredError(batchXs, denoised);
+            const mseValue = (await mse.data())[0];
+            
+            totalMSE += mseValue * batchSizeActual;
+            numBatches += batchSizeActual;
+            
+            // Cleanup
+            batchXs.dispose();
+            noisyBatch.dispose();
+            denoised.dispose();
+            mse.dispose();
+        }
+
+        const avgMSE = totalMSE / numBatches;
+        document.getElementById('metrics').innerHTML = `Denoising MSE: <b>${avgMSE.toFixed(6)}</b>`;
+        this.log(`Autoencoder evaluation: MSE = ${avgMSE.toFixed(6)}`);
     }
 
     async testFive() {
@@ -421,8 +463,7 @@ class MNISTApp {
     reset() {
         if (this.model) this.model.dispose();
         if (this.autoencoder) this.autoencoder.dispose();
-        if (this.trainData) this.data.dispose();
-        if (this.testData) this.data.dispose();
+        this.data.dispose();
         
         this.model = null;
         this.autoencoder = null;
