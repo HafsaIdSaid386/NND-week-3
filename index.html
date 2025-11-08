@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MNIST CNN Training (Client-Side)</title>
+    <title>MNIST Denoising Autoencoder</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-vis@latest"></script>
     <style>
@@ -64,13 +64,12 @@
             border: 1px solid #ddd;
             margin: 5px;
         }
-        .correct { color: green; font-weight: bold; }
-        .wrong { color: red; font-weight: bold; }
         .status { margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 4px; }
+        .log-entry { margin: 2px 0; font-family: monospace; font-size: 12px; }
     </style>
 </head>
 <body>
-    <h1>MNIST CNN Training (Client-Side)</h1>
+    <h1>MNIST Denoising Autoencoder</h1>
     
     <div class="container">
         <div class="left-panel">
