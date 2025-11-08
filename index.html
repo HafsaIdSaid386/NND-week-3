@@ -16,6 +16,7 @@
       --accent: #22c55e;
       --danger: #ef4444;
       --primary: #3b82f6;
+      --autoencoder: #8b5cf6;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; }
@@ -47,6 +48,22 @@
       gap: 10px 12px;
       align-items: center;
     }
+    .mode-bar {
+      background: rgba(139, 92, 246, 0.1);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      border-radius: 14px;
+      padding: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .mode-indicator {
+      font-weight: 700;
+      font-size: 16px;
+    }
+    .mode-indicator.classifier { color: var(--primary); }
+    .mode-indicator.autoencoder { color: var(--autoencoder); }
     label.inline {
       display: inline-flex;
       flex-direction: column;
@@ -77,6 +94,7 @@
     button.primary { border-color: rgba(59,130,246,.5); background: linear-gradient(180deg, #2563eb, #1d4ed8); }
     button.success { border-color: rgba(34,197,94,.5); background: linear-gradient(180deg, #16a34a, #15803d); }
     button.warn { border-color: rgba(234,179,8,.5); background: linear-gradient(180deg, #eab308, #a16207); }
+    button.autoencoder { border-color: rgba(139,92,246,.5); background: linear-gradient(180deg, #8b5cf6, #7c3aed); }
     button.ghost { background: rgba(255,255,255,.06); }
     button:disabled { opacity: .5; cursor: not-allowed; filter: grayscale(.4); }
     .card {
@@ -120,6 +138,9 @@
       gap: 12px;
       align-items: start;
     }
+    .denoising-preview {
+      grid-template-columns: repeat(3, minmax(0,1fr));
+    }
     .pitem { text-align: center; }
     canvas.preview {
       width: 112px; height: 112px;
@@ -132,11 +153,22 @@
     .bad { color: var(--danger); font-weight: 700; }
     .muted { color: var(--muted); }
     .list { line-height: 1.6; }
+    .comparison-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
   </style>
 </head>
 <body>
-  <h1>MNIST CNN — Browser-only</h1>
+  <h1>MNIST CNN & Autoencoder — Browser-only</h1>
   <div class="sub">Upload your <strong>mnist_train.csv</strong> and <strong>mnist_test.csv</strong>, train entirely on-device, visualize metrics, and save / reload the model (no IndexedDB, files only).</div>
+
+  <!-- Mode switcher -->
+  <div class="mode-bar">
+    <div class="mode-indicator classifier" id="currentMode">Classifier Mode</div>
+    <button id="switchMode" class="autoencoder">Switch to Autoencoder</button>
+  </div>
 
   <!-- File pickers for CSV data -->
   <div class="loadbar">
@@ -176,7 +208,7 @@
 
       <div class="card">
         <h2>Model Info</h2>
-        <div id="modelInfo" class="status">No model</div>
+        <div id="modelInfo" class="status">No model - select mode and train</div>
       </div>
 
       <div class="card" style="grid-column: 1 / -1">
@@ -194,11 +226,12 @@
       <div class="card" style="grid-column: 1 / -1">
         <h2>Metrics</h2>
         <div id="metrics" class="status">
-          No metrics yet. After training/evaluating, overall accuracy appears here. Detailed charts live in the Visor.
+          Switch between classifier and denoising modes
         </div>
         <div class="list muted" style="margin-top:8px">
-          <div>• Live training: loss / val_loss and acc / val_acc</div>
-          <div>• Evaluation: confusion matrix + per-class accuracy</div>
+          <div>• <strong>Classifier Mode:</strong> Live training: loss / val_loss and acc / val_acc</div>
+          <div>• <strong>Classifier Mode:</strong> Evaluation: confusion matrix + per-class accuracy</div>
+          <div>• <strong>Autoencoder Mode:</strong> Denoising: MSE loss, noisy → clean reconstruction</div>
         </div>
       </div>
     </div>
