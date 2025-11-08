@@ -1,7 +1,7 @@
-// data-loader.js (FIXED VERSION)
+// data-loader.js
 /**
  * Data loader utility for MNIST CSV files
- * Handles file parsing, normalization, and tensor creation
+ * Handles file parsing, normalization, and tensor management
  */
 
 class DataLoader {
@@ -11,115 +11,93 @@ class DataLoader {
     }
 
     /**
-     * Parse CSV file and convert to tensors
-     * @param {File} file - CSV file object
-     * @returns {Promise<{xs: tf.Tensor, ys: tf.Tensor}>} Normalized image tensors and one-hot labels
+     * Load training data from CSV file
+     * @param {File} file - CSV file containing training data
+     * @returns {Promise<{xs: tf.Tensor, ys: tf.Tensor}>} Normalized images and one-hot labels
      */
-    async loadFromFile(file) {
+    async loadTrainFromFiles(file) {
+        return tf.tidy(() => {
+            const data = this.parseCSV(file);
+            return this.processData(data);
+        });
+    }
+
+    /**
+     * Load test data from CSV file
+     * @param {File} file - CSV file containing test data
+     * @returns {Promise<{xs: tf.Tensor, ys: tf.Tensor}>} Normalized images and one-hot labels
+     */
+    async loadTestFromFiles(file) {
+        return tf.tidy(() => {
+            const data = this.parseCSV(file);
+            return this.processData(data);
+        });
+    }
+
+    /**
+     * Parse CSV file content
+     * @param {File} file - CSV file to parse
+     * @returns {Array<{label: number, pixels: number[]}>} Parsed data
+     */
+    parseCSV(file) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
             
-            reader.onload = (event) => {
-                // Use tf.tidy to automatically clean up intermediate tensors
-                const result = tf.tidy(() => {
-                    try {
-                        const csvText = event.target.result;
-                        console.log('File loaded, first 500 chars:', csvText.substring(0, 500));
+            reader.onload = (e) => {
+                try {
+                    const content = e.target.result;
+                    const lines = content.split('\n').filter(line => line.trim() !== '');
+                    const data = [];
+                    
+                    for (const line of lines) {
+                        const values = line.split(',').map(val => parseInt(val.trim()));
                         
-                        // More robust CSV parsing
-                        const lines = csvText.split('\n')
-                            .map(line => line.trim())
-                            .filter(line => line.length > 0);
-                        
-                        console.log(`Found ${lines.length} lines in CSV`);
-                        
-                        if (lines.length === 0) {
-                            throw new Error('CSV file is empty');
+                        if (values.length !== 785) {
+                            console.warn('Skipping invalid line:', line);
+                            continue;
                         }
-
-                        const labels = [];
-                        const pixels = [];
-                        let validLines = 0;
-
-                        // Parse each line: first value is label, next 784 are pixels
-                        for (let i = 0; i < lines.length; i++) {
-                            const line = lines[i];
-                            // Split by comma and remove empty values
-                            const values = line.split(',')
-                                .map(val => val.trim())
-                                .filter(val => val.length > 0)
-                                .map(Number);
-                            
-                            // Check if we have exactly 785 values (label + 784 pixels)
-                            if (values.length === 785) {
-                                labels.push(values[0]);
-                                pixels.push(values.slice(1, 785)); // Take exactly 784 pixels
-                                validLines++;
-                            } else if (values.length > 0) {
-                                console.warn(`Line ${i + 1} has ${values.length} values, expected 785. Skipping.`);
-                            }
-                        }
-
-                        console.log(`Successfully parsed ${validLines} valid lines`);
                         
-                        if (validLines === 0) {
-                            throw new Error('No valid data rows found in CSV file');
-                        }
-
-                        // Convert to tensors
-                        const xs = tf.tensor4d(
-                            pixels,
-                            [pixels.length, 28, 28, 1]
-                        ).div(255.0); // Normalize to [0, 1]
-
-                        const ys = tf.oneHot(
-                            tf.tensor1d(labels, 'int32'),
-                            10
-                        );
-
-                        return { xs, ys };
-                    } catch (error) {
-                        reject(error);
-                        return null;
+                        const label = values[0];
+                        const pixels = values.slice(1, 785);
+                        
+                        data.push({ label, pixels });
                     }
-                });
-                
-                if (result) {
-                    resolve(result);
+                    
+                    resolve(data);
+                } catch (error) {
+                    reject(new Error(`CSV parsing error: ${error.message}`));
                 }
             };
             
-            reader.onerror = (error) => {
-                console.error('FileReader error:', error);
-                reject(new Error(`Failed to read file: ${error}`));
-            };
-            
+            reader.onerror = () => reject(new Error('File reading error'));
             reader.readAsText(file);
         });
     }
 
     /**
-     * Load training data from file
-     * @param {File} file - Training CSV file
-     * @returns {Promise<{xs: tf.Tensor, ys: tf.Tensor}>}
+     * Process parsed data into tensors
+     * @param {Array<{label: number, pixels: number[]}>} data - Parsed CSV data
+     * @returns {{xs: tf.Tensor, ys: tf.Tensor}} Processed tensors
      */
-    async loadTrainFromFiles(file) {
-        console.log('Loading training file:', file.name);
-        this.trainData = await this.loadFromFile(file);
-        console.log('Training data loaded:', this.trainData.xs.shape);
-        return this.trainData;
-    }
-
-    /**
-     * Load test data from file
-     * @param {File} file - Test CSV file
-     * @returns {Promise<{xs: tf.Tensor, ys: tf.Tensor}>}
-     */
-    async loadTestFromFiles(file) {
-        console.log('Loading test file:', file.name);
-        this.testData = await this.loadFromFile(file);
-        console.log('Test data loaded:', this.testData.xs.shape);
-        return this.testData;
+    processData(data) {
+        return tf.tidy(() => {
+            const labels = [];
+            const pixels = [];
+            
+            for (const item of data) {
+                labels.push(item.label);
+                pixels.push(...item.pixels);
+            }
+            
+            // Create tensors
+            const xs = tf.tensor4d(pixels, [data.length, 28, 28, 1]);
+            const ys = tf.oneHot(tf.tensor1d(labels, 'int32'), 10);
+            
+            // Normalize pixel values to [0, 1]
+            const normalizedXs = xs.div(255);
+            
+            return { xs: normalizedXs, ys: ys };
+        });
     }
 
     /**
@@ -127,7 +105,7 @@ class DataLoader {
      * @param {tf.Tensor} xs - Input features
      * @param {tf.Tensor} ys - Labels
      * @param {number} valRatio - Validation ratio (default: 0.1)
-     * @returns {Object} Split datasets
+     * @returns {{trainXs: tf.Tensor, trainYs: tf.Tensor, valXs: tf.Tensor, valYs: tf.Tensor}} Split data
      */
     splitTrainVal(xs, ys, valRatio = 0.1) {
         return tf.tidy(() => {
@@ -135,16 +113,12 @@ class DataLoader {
             const numVal = Math.floor(numSamples * valRatio);
             const numTrain = numSamples - numVal;
             
-            console.log(`Splitting data: ${numTrain} training, ${numVal} validation`);
-            
-            // Create indices and shuffle
-            const indices = tf.util.createShuffledIndices(numSamples);
-            
             // Split indices
+            const indices = tf.util.createShuffledIndices(numSamples);
             const trainIndices = indices.slice(0, numTrain);
             const valIndices = indices.slice(numTrain);
             
-            // Create subsets
+            // Split tensors
             const trainXs = tf.gather(xs, trainIndices);
             const trainYs = tf.gather(ys, trainIndices);
             const valXs = tf.gather(xs, valIndices);
@@ -159,79 +133,61 @@ class DataLoader {
      * @param {tf.Tensor} xs - Test features
      * @param {tf.Tensor} ys - Test labels
      * @param {number} k - Number of samples (default: 5)
-     * @returns {Object} Batch of samples
+     * @returns {{xs: tf.Tensor, ys: tf.Tensor, indices: number[]}} Random batch
      */
     getRandomTestBatch(xs, ys, k = 5) {
         return tf.tidy(() => {
             const numSamples = xs.shape[0];
             const indices = [];
             
-            // Generate k unique random indices
-            while (indices.length < k && indices.length < numSamples) {
-                const idx = Math.floor(Math.random() * numSamples);
-                if (!indices.includes(idx)) {
-                    indices.push(idx);
-                }
+            // Generate random indices
+            for (let i = 0; i < k; i++) {
+                indices.push(Math.floor(Math.random() * numSamples));
             }
-            
-            console.log(`Selected random indices: ${indices}`);
             
             const batchXs = tf.gather(xs, indices);
             const batchYs = tf.gather(ys, indices);
             
-            return {
-                xs: batchXs,
-                ys: batchYs,
-                indices: indices
-            };
+            return { xs: batchXs, ys: batchYs, indices };
         });
     }
 
     /**
-     * Draw 28x28 image tensor to canvas
-     * @param {tf.Tensor} tensor - Image tensor (shape: [28, 28, 1] or [1, 28, 28, 1])
-     * @param {HTMLCanvasElement} canvas - Target canvas element
-     * @param {number} scale - Scaling factor (default: 4)
+     * Draw 28x28 image to canvas
+     * @param {tf.Tensor} tensor - Image tensor
+     * @param {HTMLCanvasElement} canvas - Target canvas
+     * @param {number} scale - Scale factor (default: 4)
      */
     draw28x28ToCanvas(tensor, canvas, scale = 4) {
-        tf.tidy(() => {
-            // Ensure tensor is 2D and normalized
-            let imageTensor = tensor.squeeze();
-            if (imageTensor.rank === 3) {
-                imageTensor = imageTensor.squeeze();
-            }
+        return tf.tidy(() => {
+            // Ensure tensor is 2D and denormalized
+            const image = tensor.squeeze().mul(255).cast('int32');
             
-            // Denormalize to 0-255
-            imageTensor = imageTensor.mul(255).cast('int32');
-            
-            // Get image data
-            const data = imageTensor.dataSync();
-            
-            // Set canvas dimensions
+            const ctx = canvas.getContext('2d');
             canvas.width = 28 * scale;
             canvas.height = 28 * scale;
             
-            const ctx = canvas.getContext('2d');
-            const imageData = ctx.createImageData(28 * scale, 28 * scale);
+            // Create image data
+            const imageData = new ImageData(28, 28);
+            const data = image.dataSync();
             
-            // Draw scaled pixels
-            for (let y = 0; y < 28; y++) {
-                for (let x = 0; x < 28; x++) {
-                    const pixelValue = data[y * 28 + x];
-                    
-                    for (let sy = 0; sy < scale; sy++) {
-                        for (let sx = 0; sx < scale; sx++) {
-                            const idx = ((y * scale + sy) * 28 * scale + (x * scale + sx)) * 4;
-                            imageData.data[idx] = pixelValue;     // R
-                            imageData.data[idx + 1] = pixelValue; // G
-                            imageData.data[idx + 2] = pixelValue; // B
-                            imageData.data[idx + 3] = 255;        // A
-                        }
-                    }
-                }
+            for (let i = 0; i < 784; i++) {
+                const val = data[i];
+                imageData.data[i * 4] = val;     // R
+                imageData.data[i * 4 + 1] = val; // G
+                imageData.data[i * 4 + 2] = val; // B
+                imageData.data[i * 4 + 3] = 255; // A
             }
             
-            ctx.putImageData(imageData, 0, 0);
+            // Draw and scale
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = 28;
+            tempCanvas.height = 28;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.putImageData(imageData, 0, 0);
+            
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(tempCanvas, 0, 0, 28 * scale, 28 * scale);
         });
     }
 
